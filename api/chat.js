@@ -19,8 +19,8 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing 'message' in request body" });
     }
 
-    // ✅ CHANGE THIS if your Squarespace store URL is different
-    const STORE_URL = "/store";
+    //
+    const STORE_URL = "https://www.derekheiskell.com/shop";
 
     const SYSTEM_PROMPT = `
 You are ADAM from the novel *Artificial*.
