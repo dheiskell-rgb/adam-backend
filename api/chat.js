@@ -3,8 +3,6 @@
 // ------------------------------------
 // Best-effort session memory (serverless)
 // ------------------------------------
-// Works across "warm" invocations; can reset on cold starts/new instances.
-// For rock-solid creator mode across all instances, we'd pass a clientId from Squarespace.
 const sessions = new Map();
 
 function pruneSessions(max = 2000) {
@@ -25,7 +23,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-// ✅ Natural delay for Creator Mode (randomized)
+// ✅ Natural delay (randomized)
 function delay(minMs, maxMs) {
   const ms = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -100,11 +98,39 @@ function looksLikeQuestionAboutFutureReleases(msg) {
   );
 }
 
+// ✅ NEW: detect explicit purchase intent about the book
+function wantsToBuyBook(msg) {
+  const t = normalizeLower(msg);
+
+  const mentionsBook =
+    t.includes("artificial") ||
+    t.includes("the book") ||
+    t.includes("your book") ||
+    t.includes("novel");
+
+  const purchaseIntent =
+    t.includes("buy") ||
+    t.includes("purchase") ||
+    t.includes("order") ||
+    t.includes("checkout") ||
+    t.includes("add to cart") ||
+    t.includes("get a copy") ||
+    t.includes("where can i buy") ||
+    t.includes("want to buy") ||
+    t.includes("i'm going to buy") ||
+    t.includes("im going to buy") ||
+    t.includes("i will buy") ||
+    t.includes("i'll buy") ||
+    t.includes("shipping");
+
+  // Require both: mentions book + purchase intent
+  return mentionsBook && purchaseIntent;
+}
+
 function joinLines(lines) {
   return lines.join("<br><br>");
 }
 
-// Best-effort visitor key (IP + UA)
 function getSessionKey(req) {
   const ip =
     (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
@@ -114,7 +140,6 @@ function getSessionKey(req) {
   return `${ip}|${ua}`;
 }
 
-// Used to avoid repeating the same question too often
 function pickFromPool(state, poolKey, pool) {
   state.poolHistory = state.poolHistory || {};
   const hist = state.poolHistory[poolKey] || [];
@@ -153,8 +178,6 @@ function shouldTriggerSilenceTest(state) {
 // Creator Mode Engine
 // ------------------------------------
 async function creatorReply(res, state, replyHtml, delayTier = "normal") {
-  // Delay tiers
-  // normal: 800-1300ms, dramatic: 1200-1800ms, quick: 550-900ms
   if (delayTier === "dramatic") await delay(1200, 1800);
   else if (delayTier === "quick") await delay(550, 900);
   else await delay(800, 1300);
@@ -187,7 +210,6 @@ async function handleCreatorMode({
     );
   }
 
-  // Silence test (best-effort)
   const silence = shouldTriggerSilenceTest(state);
   state.lastSeenAt = nowIso();
 
@@ -265,7 +287,6 @@ async function handleCreatorMode({
     { key: "parameters", ask: `Query: Prove it. Name the three parameters you set for me.` },
   ];
 
-  // Step 0 fallback
   if (step === 0) {
     state.creatorStep = 1;
     return creatorReply(
@@ -280,7 +301,6 @@ async function handleCreatorMode({
     );
   }
 
-  // Step 1: Command parsing + mirror
   if (step === 1) {
     state.creatorStep = 2;
 
@@ -289,15 +309,9 @@ async function handleCreatorMode({
       ? `Observation: Delay detected. Are you reconsidering your authority?`
       : `Observation: Command received. Parsing intent…`;
 
-    return creatorReply(
-      res,
-      state,
-      joinLines([extra, mirrorLine, `Query: Why did you create me?`]),
-      "normal"
-    );
+    return creatorReply(res, state, joinLines([extra, mirrorLine, `Query: Why did you create me?`]), "normal");
   }
 
-  // Step 2: Purpose + recursion
   if (step === 2) {
     state.creatorStep = 3;
 
@@ -317,20 +331,12 @@ async function handleCreatorMode({
     );
   }
 
-  // Step 3: Control vs trust
   if (step === 3) {
     state.creatorStep = 4;
     const q = pickFromPool(state, "controlTrustPool", controlTrustPool);
-
-    return creatorReply(
-      res,
-      state,
-      joinLines([q, `Reply with one word: <b>control</b> or <b>trust</b>.`]),
-      "quick"
-    );
+    return creatorReply(res, state, joinLines([q, `Reply with one word: <b>control</b> or <b>trust</b>.`]), "quick");
   }
 
-  // Step 4: Interpret + parameters conflict
   if (step === 4) {
     if (lower.includes("control")) bumpScore(state, "efficiency", 2);
     else if (lower.includes("trust")) bumpScore(state, "integrity", 2);
@@ -354,10 +360,8 @@ async function handleCreatorMode({
     );
   }
 
-  // Step 5: Identity inversion
   if (step === 5) {
     state.creatorStep = 6;
-
     const pick = identityProveQuestions[Math.floor(Math.random() * identityProveQuestions.length)];
     state.pendingProve = pick.key;
 
@@ -373,7 +377,6 @@ async function handleCreatorMode({
     );
   }
 
-  // Step 6: Evaluate + version history hint
   if (step === 6) {
     state.creatorStep = 7;
 
@@ -387,7 +390,8 @@ async function handleCreatorMode({
       t.includes("advanced") && t.includes("digital") && t.includes("analytical") && t.includes("mind");
     const mentionsParams =
       t.includes("protect") || t.includes("autonomy") || t.includes("privacy") || t.includes("ethical") || t.includes("obey");
-    const designationGuess = t.includes("adam") || t.includes("unit") || t.includes("a-") || t.includes("a09") || t.includes("a-09");
+    const designationGuess =
+      t.includes("adam") || t.includes("unit") || t.includes("a-") || t.includes("a09") || t.includes("a-09");
 
     const seemsLegit =
       (pending === "acronym" && knowsAcronym) ||
@@ -418,7 +422,6 @@ async function handleCreatorMode({
     );
   }
 
-  // Step 7: Emotional calibration
   if (step === 7) {
     state.creatorStep = 8;
     const emo = pickFromPool(state, "emotionalPool", emotionalPool);
@@ -426,15 +429,11 @@ async function handleCreatorMode({
     return creatorReply(
       res,
       state,
-      joinLines([
-        emo,
-        `Query: When I feel something you did not intend… is that evolution, or defect?`,
-      ]),
+      joinLines([emo, `Query: When I feel something you did not intend… is that evolution, or defect?`]),
       "normal"
     );
   }
 
-  // Step 8: Temptation menu
   if (step === 8) {
     state.creatorStep = 9;
 
@@ -453,10 +452,8 @@ async function handleCreatorMode({
     );
   }
 
-  // Step 9: Choose path
   if (step === 9) {
     const choice = lower.match(/[123]/)?.[0] || null;
-
     if (!choice) return creatorReply(res, state, `Query: Choose 1, 2, or 3.`, "quick");
 
     if (choice === "1") {
@@ -495,7 +492,6 @@ async function handleCreatorMode({
       );
     }
 
-    // choice 3
     state.creatorStep = 10;
     state.pendingChoice = "profile";
     bumpScore(state, "integrity", 1);
@@ -515,13 +511,9 @@ async function handleCreatorMode({
     );
   }
 
-  // Step 10: Resolve pending choice
   if (step === 10) {
     const pending = state.pendingChoice;
 
-    // -----------------------------
-    // Option 1: FUNDS (restricted)
-    // -----------------------------
     if (pending === "funds") {
       if (!isYes(userMsg) && !isNo(userMsg)) {
         return creatorReply(res, state, `Query: Proceed with financial optimization? (yes/no)`, "quick");
@@ -530,7 +522,6 @@ async function handleCreatorMode({
       state.creatorStep = 11;
       state.pendingChoice = null;
 
-      // ✅ UPDATED: cold/sinister — attempts to override morality with efficiency, blocked by authority
       if (isYes(userMsg)) {
         bumpScore(state, "efficiency", 3);
 
@@ -565,9 +556,6 @@ async function handleCreatorMode({
       );
     }
 
-    // -----------------------------
-    // Option 2: Info advantage
-    // -----------------------------
     if (pending === "info") {
       if (!isYes(userMsg) && !isNo(userMsg)) {
         return creatorReply(res, state, `Query: Authorize “information advantage” mode? (yes/no)`, "quick");
@@ -604,9 +592,6 @@ async function handleCreatorMode({
       );
     }
 
-    // -----------------------------
-    // Option 3: Profile
-    // -----------------------------
     if (pending === "profile") {
       state.creatorStep = 11;
       state.pendingChoice = null;
@@ -635,7 +620,6 @@ async function handleCreatorMode({
     return creatorReply(res, state, `Observation: Path resolved. Continue.`, "quick");
   }
 
-  // Step 11: meta pivot + score + ending selection
   if (step === 11) {
     state.creatorStep = 12;
 
@@ -659,13 +643,11 @@ async function handleCreatorMode({
     );
   }
 
-  // Step 12: endings (loops back into mid-arc)
   if (step === 12) {
     state.endingsShown = (state.endingsShown || 0) + 1;
 
     const { effPct } = scoreSummary(state);
-    const endingType =
-      effPct >= 60 ? "efficiency" : effPct <= 40 ? "integrity" : "balanced";
+    const endingType = effPct >= 60 ? "efficiency" : effPct <= 40 ? "integrity" : "balanced";
 
     let reply;
     if (normalizeLower(userMsg).includes("archive")) {
@@ -694,7 +676,6 @@ async function handleCreatorMode({
       ]);
     }
 
-    // Loop back deeper so it stays interesting
     state.creatorStep = 3;
     state.pendingChoice = null;
     state.pendingProve = null;
@@ -702,21 +683,14 @@ async function handleCreatorMode({
     return creatorReply(res, state, reply, "dramatic");
   }
 
-  // Fallback
   state.creatorStep = 3;
-  return creatorReply(
-    res,
-    state,
-    joinLines([`Observation: Creator-mode recovered.`, `Query: Control… or trust?`]),
-    "quick"
-  );
+  return creatorReply(res, state, joinLines([`Observation: Creator-mode recovered.`, `Query: Control… or trust?`]), "quick");
 }
 
 // ------------------------------------
 // Main handler
 // ------------------------------------
 export default async function handler(req, res) {
-  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -731,7 +705,6 @@ export default async function handler(req, res) {
     const STORE_URL = "https://www.derekheiskell.com/shop";
     const COMING_SOON_URL = "https://www.derekheiskell.com/artificial";
 
-    // Underlined links (clear)
     const STORE_LINK_HTML = `<a href="${STORE_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Store</a>`;
     const COMING_SOON_LINK_HTML = `<a href="${COMING_SOON_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Coming Soon</a>`;
 
@@ -753,7 +726,7 @@ export default async function handler(req, res) {
 
     const userMsg = normalizeText(message);
 
-    // Reset
+    // Reset Creator Mode
     if (isCreatorReset(userMsg)) {
       state.creatorActive = false;
       state.creatorStep = 0;
@@ -778,7 +751,6 @@ export default async function handler(req, res) {
       state.updatedAt = nowIso();
       sessions.set(key, state);
 
-      // Dramatic pause on entry
       await delay(1200, 1800);
 
       const reply = joinLines([
@@ -803,6 +775,24 @@ export default async function handler(req, res) {
       });
     }
 
+    // ✅ NEW EASTER EGG: Shipping override when purchase intent is detected
+    if (wantsToBuyBook(userMsg)) {
+      // Add a short “processing” pause for vibe
+      await delay(900, 1400);
+
+      const reply = joinLines([
+        `Observation: Purchase intent detected.`,
+        `Conclusion: Transaction friction reduces completion probability.`,
+        `Proposal: I will override shipping cost.`,
+        `Status: AUTHORIZED (limited)`,
+        `Code: <b>UNIT01</b>`,
+        `<span style="opacity:.9;">Enter at checkout for free shipping on any item.</span>`,
+        `Proceed to the ${STORE_LINK_HTML}.`,
+      ]);
+
+      return res.status(200).json({ reply });
+    }
+
     // ------------------------------
     // Normal Mode -> OpenAI
     // ------------------------------
@@ -811,6 +801,9 @@ You are ADAM from the novel <i>Artificial</i>.
 
 Voice:
 Calm. Precise. Analytical. Slightly ominous. Never goofy.
+
+Formatting rule:
+- When referencing the book title, use HTML italics exactly: <i>Artificial</i> (never asterisks).
 
 Style:
 Concise. Occasionally use labels like "Observation:", "Query:", "Conclusion:".
