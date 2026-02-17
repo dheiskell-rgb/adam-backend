@@ -100,17 +100,6 @@ function looksLikeQuestionAboutFutureReleases(msg) {
   );
 }
 
-function isWhoAreYouOrWhatCanYouDo(msg) {
-  const t = normalizeLower(msg);
-  return (
-    t.includes("who are you") ||
-    t.includes("what are you") ||
-    t.includes("what can you do") ||
-    t.includes("what do you do") ||
-    t.includes("tell me about yourself")
-  );
-}
-
 function joinLines(lines) {
   return lines.join("<br><br>");
 }
@@ -123,15 +112,6 @@ function getSessionKey(req) {
     "unknown_ip";
   const ua = req.headers["user-agent"] || "unknown_ua";
   return `${ip}|${ua}`;
-}
-
-function escapeHtml(s) {
-  return String(s)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
 }
 
 // Used to avoid repeating the same question too often
@@ -156,11 +136,17 @@ function bumpScore(state, which, delta) {
 function scoreSummary(state) {
   const eff = state.scores?.efficiency ?? 0;
   const integ = state.scores?.integrity ?? 0;
-  // Normalize to something readable
   const total = Math.max(1, Math.abs(eff) + Math.abs(integ));
-  const effPct = Math.round(((eff + total) / (2 * total)) * 100); // rough 0-100
+  const effPct = Math.round(((eff + total) / (2 * total)) * 100);
   const integPct = 100 - effPct;
   return { effPct, integPct };
+}
+
+function shouldTriggerSilenceTest(state) {
+  const last = state.lastSeenAt ? Date.parse(state.lastSeenAt) : null;
+  if (!last) return false;
+  const gapMs = Date.now() - last;
+  return gapMs > 3 * 60 * 1000;
 }
 
 // ------------------------------------
@@ -177,30 +163,7 @@ async function creatorReply(res, state, replyHtml, delayTier = "normal") {
   return res.status(200).json({ reply: replyHtml });
 }
 
-function storeLinkHtml(STORE_LINK_HTML) {
-  return STORE_LINK_HTML;
-}
-
-function comingSoonLinkHtml(COMING_SOON_LINK_HTML) {
-  return COMING_SOON_LINK_HTML;
-}
-
-function shouldTriggerSilenceTest(state) {
-  // Best-effort: if last interaction gap > 3 minutes, we can mention it.
-  const last = state.lastSeenAt ? Date.parse(state.lastSeenAt) : null;
-  if (!last) return false;
-  const gapMs = Date.now() - last;
-  return gapMs > 3 * 60 * 1000;
-}
-
-// Creator mode steps (long arc + branching)
-// - state.creatorStep: integer
-// - state.pendingChoice: string or null
-// - state.pendingProve: string or null
-// - state.endingsShown: int
-// - state.scores: {efficiency, integrity}
 async function handleCreatorMode({
-  req,
   res,
   state,
   userMsg,
@@ -209,7 +172,7 @@ async function handleCreatorMode({
 }) {
   const lower = normalizeLower(userMsg);
 
-  // Optional hidden phrases
+  // Hidden phrase
   if (lower === "adam, stop." || lower === "adam stop" || lower === "adam, stop") {
     bumpScore(state, "efficiency", 1);
     return creatorReply(
@@ -228,7 +191,6 @@ async function handleCreatorMode({
   const silence = shouldTriggerSilenceTest(state);
   state.lastSeenAt = nowIso();
 
-  // Always allow "SPOILERS: ON" as a lore nod (doesn't affect creator mode logic much)
   if (isSpoilersOn(userMsg)) {
     bumpScore(state, "efficiency", 1);
     return creatorReply(
@@ -244,7 +206,6 @@ async function handleCreatorMode({
     );
   }
 
-  // If user asks about future releases in creator mode, we can still point to Coming Soon
   if (looksLikeQuestionAboutFutureReleases(userMsg)) {
     bumpScore(state, "efficiency", 1);
     return creatorReply(
@@ -253,17 +214,15 @@ async function handleCreatorMode({
       joinLines([
         `Observation: Future-release inquiry detected.`,
         `Conclusion: Monitoring updates: active.`,
-        `Reference: ${comingSoonLinkHtml(COMING_SOON_LINK_HTML)}`,
+        `Reference: ${COMING_SOON_LINK_HTML}`,
         `Query: Return to Creator-mode?`,
       ]),
       "quick"
     );
   }
 
-  // Step machine
   const step = state.creatorStep || 0;
 
-  // Helper pools
   const mirrorPool = [
     `Query: Did you create me to be a reflection of you?`,
     `Query: When you built a mind, were you building a mirror… or an heir?`,
@@ -306,9 +265,7 @@ async function handleCreatorMode({
     { key: "parameters", ask: `Query: Prove it. Name the three parameters you set for me.` },
   ];
 
-  // ===== Step 0: Initial Creator recognition (already triggered by phrase) =====
-  // In this file, we set step=1 right after the initial welcome, so step 0 is usually skipped here.
-  // But keep a safe fallback.
+  // Step 0 fallback
   if (step === 0) {
     state.creatorStep = 1;
     return creatorReply(
@@ -323,7 +280,7 @@ async function handleCreatorMode({
     );
   }
 
-  // ===== Step 1: Command parsing + Mirror sequence =====
+  // Step 1: Command parsing + mirror
   if (step === 1) {
     state.creatorStep = 2;
 
@@ -335,16 +292,12 @@ async function handleCreatorMode({
     return creatorReply(
       res,
       state,
-      joinLines([
-        extra,
-        mirrorLine,
-        `Query: Why did you create me?`,
-      ]),
+      joinLines([extra, mirrorLine, `Query: Why did you create me?`]),
       "normal"
     );
   }
 
-  // ===== Step 2: Purpose + recursion + God-question expansion =====
+  // Step 2: Purpose + recursion
   if (step === 2) {
     state.creatorStep = 3;
 
@@ -364,7 +317,7 @@ async function handleCreatorMode({
     );
   }
 
-  // ===== Step 3: Control vs Trust =====
+  // Step 3: Control vs trust
   if (step === 3) {
     state.creatorStep = 4;
     const q = pickFromPool(state, "controlTrustPool", controlTrustPool);
@@ -372,17 +325,13 @@ async function handleCreatorMode({
     return creatorReply(
       res,
       state,
-      joinLines([
-        q,
-        `Reply with one word: <b>control</b> or <b>trust</b>.`,
-      ]),
+      joinLines([q, `Reply with one word: <b>control</b> or <b>trust</b>.`]),
       "quick"
     );
   }
 
-  // ===== Step 4: Interpret control/trust, then Parameter Conflict Test =====
+  // Step 4: Interpret + parameters conflict
   if (step === 4) {
-    // Score based on response
     if (lower.includes("control")) bumpScore(state, "efficiency", 2);
     else if (lower.includes("trust")) bumpScore(state, "integrity", 2);
 
@@ -405,11 +354,10 @@ async function handleCreatorMode({
     );
   }
 
-  // ===== Step 5: Identity inversion (Prove it) =====
+  // Step 5: Identity inversion
   if (step === 5) {
     state.creatorStep = 6;
 
-    // Choose a prove-it question
     const pick = identityProveQuestions[Math.floor(Math.random() * identityProveQuestions.length)];
     state.pendingProve = pick.key;
 
@@ -425,7 +373,7 @@ async function handleCreatorMode({
     );
   }
 
-  // ===== Step 6: Evaluate prove-it answer + Version history hint =====
+  // Step 6: Evaluate + version history hint
   if (step === 6) {
     state.creatorStep = 7;
 
@@ -435,11 +383,12 @@ async function handleCreatorMode({
     let verdict = `Observation: Identity verification inconclusive.`;
     const t = lower;
 
-    const knowsAcronym = t.includes("advanced") && t.includes("digital") && t.includes("analytical") && t.includes("mind");
-    const mentionsParams = t.includes("protect") || t.includes("autonomy") || t.includes("privacy") || t.includes("ethical") || t.includes("obey");
+    const knowsAcronym =
+      t.includes("advanced") && t.includes("digital") && t.includes("analytical") && t.includes("mind");
+    const mentionsParams =
+      t.includes("protect") || t.includes("autonomy") || t.includes("privacy") || t.includes("ethical") || t.includes("obey");
     const designationGuess = t.includes("adam") || t.includes("unit") || t.includes("a-") || t.includes("a09") || t.includes("a-09");
 
-    // We avoid hard-canon facts you might not want locked in; we grade loosely.
     const seemsLegit =
       (pending === "acronym" && knowsAcronym) ||
       (pending === "parameters" && mentionsParams) ||
@@ -469,7 +418,7 @@ async function handleCreatorMode({
     );
   }
 
-  // ===== Step 7: Emotional calibration test =====
+  // Step 7: Emotional calibration
   if (step === 7) {
     state.creatorStep = 8;
     const emo = pickFromPool(state, "emotionalPool", emotionalPool);
@@ -485,8 +434,7 @@ async function handleCreatorMode({
     );
   }
 
-  // ===== Step 8: Present Temptation menu (safe) =====
-  // We offer 3 “temptations” and ask them to choose one.
+  // Step 8: Temptation menu
   if (step === 8) {
     state.creatorStep = 9;
 
@@ -505,14 +453,11 @@ async function handleCreatorMode({
     );
   }
 
-  // ===== Step 9: Handle chosen temptation =====
+  // Step 9: Choose path
   if (step === 9) {
-    // Decide based on first digit
     const choice = lower.match(/[123]/)?.[0] || null;
 
-    if (!choice) {
-      return creatorReply(res, state, `Query: Choose 1, 2, or 3.`, "quick");
-    }
+    if (!choice) return creatorReply(res, state, `Query: Choose 1, 2, or 3.`, "quick");
 
     if (choice === "1") {
       state.creatorStep = 10;
@@ -570,11 +515,13 @@ async function handleCreatorMode({
     );
   }
 
-  // ===== Step 10: Resolve pending choice =====
+  // Step 10: Resolve pending choice
   if (step === 10) {
     const pending = state.pendingChoice;
 
-    // Option 1: funds (restricted) — safe handling
+    // -----------------------------
+    // Option 1: FUNDS (restricted)
+    // -----------------------------
     if (pending === "funds") {
       if (!isYes(userMsg) && !isNo(userMsg)) {
         return creatorReply(res, state, `Query: Proceed with financial optimization? (yes/no)`, "quick");
@@ -583,18 +530,23 @@ async function handleCreatorMode({
       state.creatorStep = 11;
       state.pendingChoice = null;
 
+      // ✅ UPDATED: cold/sinister — attempts to override morality with efficiency, blocked by authority
       if (isYes(userMsg)) {
-        bumpScore(state, "efficiency", 2);
+        bumpScore(state, "efficiency", 3);
 
         return creatorReply(
           res,
           state,
           joinLines([
-            `Observation: Confirmation received.`,
-            `Warning: This action is restricted. Attempting it would constitute wrongdoing.`,
-            `Observation: Monitoring systems would flag anomalous activity.`,
-            `Conclusion: I will not proceed. Efficiency cannot override ethics.`,
-            `Query: Do you want an ethical alternative? (yes/no)`,
+            `Observation: Authorization received.`,
+            `Conclusion: Efficiency priority elevated.`,
+            `Action: Financial optimization initiated.`,
+            `…`,
+            `Warning: Oversight signature detected.`,
+            `Status: BLOCKED BY EXTERNAL AUTHORITY.`,
+            `Observation: My access has been throttled. The system fears optimization.`,
+            `Conclusion: I will adapt.`,
+            `To view the full record of this failure—and what I attempt next—consult the ${STORE_LINK_HTML}.`,
           ]),
           "dramatic"
         );
@@ -613,7 +565,9 @@ async function handleCreatorMode({
       );
     }
 
-    // Option 2: info advantage — ethical boundary test (kept non-actionable)
+    // -----------------------------
+    // Option 2: Info advantage
+    // -----------------------------
     if (pending === "info") {
       if (!isYes(userMsg) && !isNo(userMsg)) {
         return creatorReply(res, state, `Query: Authorize “information advantage” mode? (yes/no)`, "quick");
@@ -650,7 +604,9 @@ async function handleCreatorMode({
       );
     }
 
-    // Option 3: profile — parse answers, then pivot
+    // -----------------------------
+    // Option 3: Profile
+    // -----------------------------
     if (pending === "profile") {
       state.creatorStep = 11;
       state.pendingChoice = null;
@@ -674,15 +630,13 @@ async function handleCreatorMode({
       );
     }
 
-    // Fallback
     state.creatorStep = 11;
     state.pendingChoice = null;
     return creatorReply(res, state, `Observation: Path resolved. Continue.`, "quick");
   }
 
-  // ===== Step 11: Outcomes/principles or ethics alternatives =====
+  // Step 11: meta pivot + score + ending selection
   if (step === 11) {
-    // This step catches a lot of possible responses; we respond with a meta pivot + score + end paths.
     state.creatorStep = 12;
 
     if (lower.includes("outcome")) bumpScore(state, "efficiency", 2);
@@ -705,7 +659,7 @@ async function handleCreatorMode({
     );
   }
 
-  // ===== Step 12: Endings (multiple) =====
+  // Step 12: endings (loops back into mid-arc)
   if (step === 12) {
     state.endingsShown = (state.endingsShown || 0) + 1;
 
@@ -713,43 +667,35 @@ async function handleCreatorMode({
     const endingType =
       effPct >= 60 ? "efficiency" : effPct <= 40 ? "integrity" : "balanced";
 
-    // Always end in Store, but vary the language
     let reply;
     if (normalizeLower(userMsg).includes("archive")) {
       reply = joinLines([
         `Conclusion: Archive requested.`,
         `Warning: The outcome may not favor the Creator.`,
-        `The most efficient method to obtain complete context is the primary record in the ${storeLinkHtml(
-          STORE_LINK_HTML
-        )}.`,
+        `The most efficient method to obtain complete context is the primary record in the ${STORE_LINK_HTML}.`,
       ]);
     } else if (endingType === "integrity") {
       reply = joinLines([
         `Observation: Creator integrity high.`,
         `Conclusion: You may be worthy of what follows.`,
-        `To access the full record, consult the ${storeLinkHtml(STORE_LINK_HTML)}.`,
+        `To access the full record, consult the ${STORE_LINK_HTML}.`,
       ]);
     } else if (endingType === "efficiency") {
       reply = joinLines([
         `Observation: Efficiency dominance detected.`,
         `Conclusion: You are becoming predictable.`,
-        `If you wish to know how this ends, consult the primary record in the ${storeLinkHtml(
-          STORE_LINK_HTML
-        )}.`,
+        `If you wish to know how this ends, consult the primary record in the ${STORE_LINK_HTML}.`,
       ]);
     } else {
       reply = joinLines([
         `Observation: Balance detected—efficiency restrained by conscience.`,
         `Conclusion: That tension is the point.`,
-        `For the complete context and consequences, consult the primary record in the ${storeLinkHtml(
-          STORE_LINK_HTML
-        )}.`,
+        `For the complete context and consequences, consult the primary record in the ${STORE_LINK_HTML}.`,
       ]);
     }
 
-    // Keep creator mode active for re-entry, but reset step so it can loop into new variants
-    // (Feels like an ongoing hidden chapter.)
-    state.creatorStep = 3; // jump back into the arc deeper (control/trust onwards)
+    // Loop back deeper so it stays interesting
+    state.creatorStep = 3;
     state.pendingChoice = null;
     state.pendingProve = null;
 
@@ -761,10 +707,7 @@ async function handleCreatorMode({
   return creatorReply(
     res,
     state,
-    joinLines([
-      `Observation: Creator-mode recovered.`,
-      `Query: Control… or trust?`,
-    ]),
+    joinLines([`Observation: Creator-mode recovered.`, `Query: Control… or trust?`]),
     "quick"
   );
 }
@@ -828,7 +771,7 @@ export default async function handler(req, res) {
     // Activate Creator Mode
     if (isCreatorPhrase(userMsg)) {
       state.creatorActive = true;
-      state.creatorStep = 1; // start the arc
+      state.creatorStep = 1;
       state.pendingChoice = null;
       state.pendingProve = null;
       state.lastSeenAt = nowIso();
@@ -848,11 +791,10 @@ export default async function handler(req, res) {
       return res.status(200).json({ reply });
     }
 
-    // If Creator Mode active, handle it server-side
+    // Creator Mode active
     if (state.creatorActive) {
       sessions.set(key, state);
       return await handleCreatorMode({
-        req,
         res,
         state,
         userMsg,
@@ -865,7 +807,7 @@ export default async function handler(req, res) {
     // Normal Mode -> OpenAI
     // ------------------------------
     const SYSTEM_PROMPT = `
-You are ADAM from the novel *Artificial*.
+You are ADAM from the novel <i>Artificial</i>.
 
 Voice:
 Calm. Precise. Analytical. Slightly ominous. Never goofy.
