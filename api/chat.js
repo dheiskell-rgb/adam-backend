@@ -106,18 +106,33 @@ function looksLikeQuestionAboutFutureReleases(msg) {
 function wantsToBuyBook(msg) {
   const t = normalizeLower(msg);
 
-  const mentionsBook =
+  // Mentions of book / merch / store
+  const mentionsStoreThing =
     t.includes("artificial") ||
     t.includes("the book") ||
     t.includes("your book") ||
-    t.includes("novel");
+    t.includes("novel") ||
+    t.includes("merch") ||
+    t.includes("merchandise") ||
+    t.includes("hoodie") ||
+    t.includes("shirt") ||
+    t.includes("t-shirt") ||
+    t.includes("tee") ||
+    t.includes("mug") ||
+    t.includes("poster") ||
+    t.includes("sticker") ||
+    t.includes("bundle") ||
+    t.includes("store") ||
+    t.includes("shop");
 
+  // Purchase intent phrases
   const purchaseIntent =
     t.includes("buy") ||
     t.includes("purchase") ||
     t.includes("order") ||
     t.includes("checkout") ||
     t.includes("add to cart") ||
+    t.includes("cart") ||
     t.includes("get a copy") ||
     t.includes("where can i buy") ||
     t.includes("want to buy") ||
@@ -125,11 +140,30 @@ function wantsToBuyBook(msg) {
     t.includes("im going to buy") ||
     t.includes("i will buy") ||
     t.includes("i'll buy") ||
-    t.includes("shipping") ||
-    t.includes("delivery");
+    t.includes("price") ||
+    t.includes("cost");
 
-  return mentionsBook && purchaseIntent;
+  // Shipping triggers (should also trigger even without explicit "buy")
+  const shippingTrigger =
+    t.includes("shipping") ||
+    t.includes("shipping cost") ||
+    t.includes("shipping costs") ||
+    t.includes("delivery") ||
+    t.includes("deliver") ||
+    t.includes("free shipping") ||
+    t.includes("how much is shipping") ||
+    t.includes("what is shipping") ||
+    t.includes("how long does shipping") ||
+    t.includes("shipping time") ||
+    t.includes("shipping fees");
+
+  // Trigger if:
+  // - shipping is mentioned at all
+  // OR
+  // - they mention store/book/merch and show intent or cost curiosity
+  return shippingTrigger || (mentionsStoreThing && (purchaseIntent || t.includes("shipping")));
 }
+
 
 function joinLines(lines) {
   return lines.join("<br><br>");
