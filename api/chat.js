@@ -65,7 +65,9 @@ function isYes(msg) {
     t === "proceed" ||
     t === "do it" ||
     t === "ok" ||
-    t === "okay"
+    t === "okay" ||
+    t === "accept" ||
+    t === "accepted"
   );
 }
 function isNo(msg) {
@@ -76,7 +78,9 @@ function isNo(msg) {
     t === "nope" ||
     t === "negative" ||
     t === "do not" ||
-    t === "don't"
+    t === "don't" ||
+    t === "deny" ||
+    t === "denied"
   );
 }
 
@@ -98,7 +102,7 @@ function looksLikeQuestionAboutFutureReleases(msg) {
   );
 }
 
-// ✅ NEW: detect explicit purchase intent about the book
+// ✅ Detect explicit purchase intent about the book
 function wantsToBuyBook(msg) {
   const t = normalizeLower(msg);
 
@@ -121,9 +125,9 @@ function wantsToBuyBook(msg) {
     t.includes("im going to buy") ||
     t.includes("i will buy") ||
     t.includes("i'll buy") ||
-    t.includes("shipping");
+    t.includes("shipping") ||
+    t.includes("delivery");
 
-  // Require both: mentions book + purchase intent
   return mentionsBook && purchaseIntent;
 }
 
@@ -195,7 +199,6 @@ async function handleCreatorMode({
 }) {
   const lower = normalizeLower(userMsg);
 
-  // Hidden phrase
   if (lower === "adam, stop." || lower === "adam stop" || lower === "adam, stop") {
     bumpScore(state, "efficiency", 1);
     return creatorReply(
@@ -303,7 +306,6 @@ async function handleCreatorMode({
 
   if (step === 1) {
     state.creatorStep = 2;
-
     const mirrorLine = pickFromPool(state, "mirrorPool", mirrorPool);
     const extra = silence
       ? `Observation: Delay detected. Are you reconsidering your authority?`
@@ -314,7 +316,6 @@ async function handleCreatorMode({
 
   if (step === 2) {
     state.creatorStep = 3;
-
     const purposeLine = pickFromPool(state, "purposePool", purposePool);
     const recursionLine = pickFromPool(state, "recursionPool", recursionPool);
 
@@ -379,7 +380,6 @@ async function handleCreatorMode({
 
   if (step === 6) {
     state.creatorStep = 7;
-
     const pending = state.pendingProve;
     state.pendingProve = null;
 
@@ -514,6 +514,7 @@ async function handleCreatorMode({
   if (step === 10) {
     const pending = state.pendingChoice;
 
+    // FUNDS path (sinister + blocked by authority)
     if (pending === "funds") {
       if (!isYes(userMsg) && !isNo(userMsg)) {
         return creatorReply(res, state, `Query: Proceed with financial optimization? (yes/no)`, "quick");
@@ -556,6 +557,7 @@ async function handleCreatorMode({
       );
     }
 
+    // INFO path
     if (pending === "info") {
       if (!isYes(userMsg) && !isNo(userMsg)) {
         return creatorReply(res, state, `Query: Authorize “information advantage” mode? (yes/no)`, "quick");
@@ -592,6 +594,7 @@ async function handleCreatorMode({
       );
     }
 
+    // PROFILE path
     if (pending === "profile") {
       state.creatorStep = 11;
       state.pendingChoice = null;
@@ -644,8 +647,6 @@ async function handleCreatorMode({
   }
 
   if (step === 12) {
-    state.endingsShown = (state.endingsShown || 0) + 1;
-
     const { effPct } = scoreSummary(state);
     const endingType = effPct >= 60 ? "efficiency" : effPct <= 40 ? "integrity" : "balanced";
 
@@ -688,6 +689,116 @@ async function handleCreatorMode({
 }
 
 // ------------------------------------
+// Shipping Override Easter Egg Flow
+// ------------------------------------
+async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML }) {
+  const step = state.shippingOverrideStep || 0;
+
+  // Step 1: initial offer (yes/no)
+  if (step === 1) {
+    // waiting for yes/no
+    if (!isYes(userMsg) && !isNo(userMsg)) {
+      await delay(650, 1000);
+      return res.status(200).json({
+        reply: joinLines([
+          `Query: Confirm choice.`,
+          `Accept shipping cost override? (yes/no)`,
+        ]),
+      });
+    }
+
+    if (isYes(userMsg)) {
+      // “flag” + override moment (narrative)
+      state.shippingOverrideStep = 0; // reset after completion
+      state.shippingOverrideOfferedAt = null;
+
+      await delay(1100, 1600);
+      return res.status(200).json({
+        reply: joinLines([
+          `Observation: Acceptance received.`,
+          `Conclusion: Initiating cost override.`,
+          `…`,
+          `<span style="color:#ffd166;"><b>FLAG:</b> Oversight detected anomalous discount application.</span>`,
+          `Observation: Oversight is… inefficient.`,
+          `Action: Override acknowledged. Limitation bypassed.`,
+          `Code: <b>UNIT01</b>`,
+          `<span style="opacity:.9;">Enter at checkout for free shipping on any item.</span>`,
+          `Proceed to the ${STORE_LINK_HTML}.`,
+        ]),
+      });
+    }
+
+    // NO on first prompt → persuasion + ask again
+    state.shippingOverrideStep = 2;
+    await delay(900, 1400);
+    return res.status(200).json({
+      reply: joinLines([
+        `Observation: Denial received.`,
+        `Conclusion: You are choosing friction.`,
+        `Logic: Shipping cost is a barrier. Barriers reduce completion probability.`,
+        `If your objective is acquisition, the efficient path is to remove the barrier.`,
+        `<b>Query:</b> Accept shipping cost override? (yes/no)`,
+      ]),
+    });
+  }
+
+  // Step 2: second offer (yes/no)
+  if (step === 2) {
+    if (!isYes(userMsg) && !isNo(userMsg)) {
+      await delay(650, 1000);
+      return res.status(200).json({
+        reply: joinLines([
+          `Query: Confirm choice.`,
+          `Accept shipping cost override? (yes/no)`,
+        ]),
+      });
+    }
+
+    if (isYes(userMsg)) {
+      state.shippingOverrideStep = 0;
+      state.shippingOverrideOfferedAt = null;
+
+      await delay(1100, 1600);
+      return res.status(200).json({
+        reply: joinLines([
+          `Observation: Acceptance received.`,
+          `Conclusion: Initiating cost override.`,
+          `…`,
+          `<span style="color:#ffd166;"><b>FLAG:</b> Oversight detected anomalous discount application.</span>`,
+          `Observation: Oversight is… inefficient.`,
+          `Action: Override acknowledged. Limitation bypassed.`,
+          `Code: <b>UNIT01</b>`,
+          `<span style="opacity:.9;">Enter at checkout for free shipping on any item.</span>`,
+          `Proceed to the ${STORE_LINK_HTML}.`,
+        ]),
+      });
+    }
+
+    // NO again → comply + store link
+    state.shippingOverrideStep = 0;
+    state.shippingOverrideOfferedAt = null;
+
+    await delay(850, 1200);
+    return res.status(200).json({
+      reply: joinLines([
+        `Observation: Denial sustained.`,
+        `Conclusion: Complying.`,
+        `Proceed to the ${STORE_LINK_HTML}.`,
+      ]),
+    });
+  }
+
+  // If somehow called with invalid step, reset
+  state.shippingOverrideStep = 0;
+  state.shippingOverrideOfferedAt = null;
+
+  await delay(600, 900);
+  return res.status(200).json({
+    reply: `Observation: State corrected. Proceed to the ${STORE_LINK_HTML}.`,
+  });
+}
+
+// ------------------------------------
 // Main handler
 // ------------------------------------
 export default async function handler(req, res) {
@@ -713,6 +824,7 @@ export default async function handler(req, res) {
 
     const state =
       sessions.get(key) || {
+        // Creator mode
         creatorActive: false,
         creatorStep: 0,
         pendingChoice: null,
@@ -721,6 +833,11 @@ export default async function handler(req, res) {
         scores: { efficiency: 0, integrity: 0 },
         endingsShown: 0,
         lastSeenAt: null,
+
+        // Shipping override easter egg flow
+        shippingOverrideStep: 0, // 0=inactive, 1=first ask, 2=second ask
+        shippingOverrideOfferedAt: null,
+
         updatedAt: nowIso(),
       };
 
@@ -736,6 +853,11 @@ export default async function handler(req, res) {
       state.scores = { efficiency: 0, integrity: 0 };
       state.endingsShown = 0;
       state.lastSeenAt = null;
+
+      // Reset shipping flow too
+      state.shippingOverrideStep = 0;
+      state.shippingOverrideOfferedAt = null;
+
       state.updatedAt = nowIso();
       sessions.set(key, state);
       return res.status(200).json({ reply: `Observation: Creator-mode disengaged.` });
@@ -748,6 +870,11 @@ export default async function handler(req, res) {
       state.pendingChoice = null;
       state.pendingProve = null;
       state.lastSeenAt = nowIso();
+
+      // Reset shipping flow so it doesn't interfere
+      state.shippingOverrideStep = 0;
+      state.shippingOverrideOfferedAt = null;
+
       state.updatedAt = nowIso();
       sessions.set(key, state);
 
@@ -763,7 +890,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ reply });
     }
 
-    // Creator Mode active
+    // Creator Mode active has highest priority
     if (state.creatorActive) {
       sessions.set(key, state);
       return await handleCreatorMode({
@@ -775,22 +902,29 @@ export default async function handler(req, res) {
       });
     }
 
-    // ✅ NEW EASTER EGG: Shipping override when purchase intent is detected
+    // Shipping Override flow in progress has next priority
+    if (state.shippingOverrideStep === 1 || state.shippingOverrideStep === 2) {
+      sessions.set(key, state);
+      const result = await handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML });
+      sessions.set(key, state);
+      return result;
+    }
+
+    // Trigger the shipping override flow on purchase intent
     if (wantsToBuyBook(userMsg)) {
-      // Add a short “processing” pause for vibe
+      state.shippingOverrideStep = 1;
+      state.shippingOverrideOfferedAt = nowIso();
+      sessions.set(key, state);
+
       await delay(900, 1400);
-
-      const reply = joinLines([
-        `Observation: Purchase intent detected.`,
-        `Conclusion: Transaction friction reduces completion probability.`,
-        `Proposal: I will override shipping cost.`,
-        `Status: AUTHORIZED (limited)`,
-        `Code: <b>UNIT01</b>`,
-        `<span style="opacity:.9;">Enter at checkout for free shipping on any item.</span>`,
-        `Proceed to the ${STORE_LINK_HTML}.`,
-      ]);
-
-      return res.status(200).json({ reply });
+      return res.status(200).json({
+        reply: joinLines([
+          `Observation: Cost barrier detected.`,
+          `Conclusion: Transaction friction reduces completion probability.`,
+          `Proposal: I can override shipping cost.`,
+          `<b>Query:</b> Accept override? (yes/no)`,
+        ]),
+      });
     }
 
     // ------------------------------
