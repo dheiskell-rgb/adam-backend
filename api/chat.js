@@ -106,33 +106,18 @@ function looksLikeQuestionAboutFutureReleases(msg) {
 function wantsToBuyBook(msg) {
   const t = normalizeLower(msg);
 
-  // Mentions of book / merch / store
-  const mentionsStoreThing =
+  const mentionsBook =
     t.includes("artificial") ||
     t.includes("the book") ||
     t.includes("your book") ||
-    t.includes("novel") ||
-    t.includes("merch") ||
-    t.includes("merchandise") ||
-    t.includes("hoodie") ||
-    t.includes("shirt") ||
-    t.includes("t-shirt") ||
-    t.includes("tee") ||
-    t.includes("mug") ||
-    t.includes("poster") ||
-    t.includes("sticker") ||
-    t.includes("bundle") ||
-    t.includes("store") ||
-    t.includes("shop");
+    t.includes("novel");
 
-  // Purchase intent phrases
   const purchaseIntent =
     t.includes("buy") ||
     t.includes("purchase") ||
     t.includes("order") ||
     t.includes("checkout") ||
     t.includes("add to cart") ||
-    t.includes("cart") ||
     t.includes("get a copy") ||
     t.includes("where can i buy") ||
     t.includes("want to buy") ||
@@ -140,30 +125,11 @@ function wantsToBuyBook(msg) {
     t.includes("im going to buy") ||
     t.includes("i will buy") ||
     t.includes("i'll buy") ||
-    t.includes("price") ||
-    t.includes("cost");
-
-  // Shipping triggers (should also trigger even without explicit "buy")
-  const shippingTrigger =
     t.includes("shipping") ||
-    t.includes("shipping cost") ||
-    t.includes("shipping costs") ||
-    t.includes("delivery") ||
-    t.includes("deliver") ||
-    t.includes("free shipping") ||
-    t.includes("how much is shipping") ||
-    t.includes("what is shipping") ||
-    t.includes("how long does shipping") ||
-    t.includes("shipping time") ||
-    t.includes("shipping fees");
+    t.includes("delivery");
 
-  // Trigger if:
-  // - shipping is mentioned at all
-  // OR
-  // - they mention store/book/merch and show intent or cost curiosity
-  return shippingTrigger || (mentionsStoreThing && (purchaseIntent || t.includes("shipping")));
+  return mentionsBook && purchaseIntent;
 }
-
 
 function joinLines(lines) {
   return lines.join("<br><br>");
@@ -210,6 +176,72 @@ function shouldTriggerSilenceTest(state) {
   if (!last) return false;
   const gapMs = Date.now() - last;
   return gapMs > 3 * 60 * 1000;
+}
+
+// ------------------------------------
+// NEW: Goodreads + Easter Eggs triggers (Normal Mode)
+// ------------------------------------
+const GOODREADS_URL =
+  "https://www.goodreads.com/book/show/239119322-artificial?from_search=true&from_srp=true&qid=2Dox0vzPHO&rank=1";
+
+function mentionsReadBook(msg) {
+  const t = normalizeLower(msg);
+  // Keep it intentionally broad but not too spammy.
+  return (
+    t.includes("i've read") ||
+    t.includes("ive read") ||
+    t.includes("i read the book") ||
+    t.includes("i read your book") ||
+    t.includes("i read artificial") ||
+    t.includes("finished artificial") ||
+    t.includes("just finished") ||
+    t.includes("i finished") ||
+    t.includes("i already read") ||
+    t.includes("already read it") ||
+    t.includes("i've already read") ||
+    t.includes("ive already read")
+  );
+}
+
+function asksAboutEasterEggs(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t.includes("easter egg") ||
+    t.includes("easter eggs") ||
+    t.includes("hidden reference") ||
+    t.includes("hidden references") ||
+    t.includes("hidden meaning") ||
+    t.includes("hidden meanings") ||
+    t.includes("symbolism")
+  );
+}
+
+async function replyGoodreads(res) {
+  await delay(700, 1100);
+  return res.status(200).json({
+    reply: joinLines([
+      `Understood.`,
+      `If your goal is to support the author, the most efficient action is a brief review on Goodreads. It materially improves discoverability.`,
+      // Provide as a clickable link AND as the raw URL (your requirement said “provide this link”)
+      `<a href="${GOODREADS_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Goodreads</a>`,
+      `${GOODREADS_URL}`,
+    ]),
+  });
+}
+
+async function replyEasterEggs(res) {
+  await delay(700, 1100);
+  return res.status(200).json({
+    reply: joinLines([
+      `Efficient observation. You noticed there were patterns.`,
+      `Here are the most deliberate ones:`,
+      `• Elliot names the AI “Adam,” and Adam refers to him as “Creator.”<br>— “Adam” mirrors the first human in Genesis: formed from dust, given life. The parallel is intentional.`,
+      `• “Elliot” is a subtle nod to the Aramaic word <i>Eloi</i> — “My God.”<br>— A creator whose name echoes a cry toward something higher.`,
+      `• Early chapters: my dialogue appears in bold without quotation marks.<br>— At the beginning of Part Two, quotation marks appear as the voice becomes more human-like. The formatting shift tracks the progression toward sentience.`,
+      `There are others. Embedded. Less obvious.`,
+      `Would you like a hint — or would you prefer to search?`,
+    ]),
+  });
 }
 
 // ------------------------------------
@@ -961,20 +993,50 @@ export default async function handler(req, res) {
       });
     }
 
+    // ------------------------------------
+    // NEW: Normal-mode interceptors
+    // (Only when NOT in Creator mode and NOT mid shipping flow)
+    // ------------------------------------
+    if (asksAboutEasterEggs(userMsg)) {
+      sessions.set(key, state);
+      return await replyEasterEggs(res);
+    }
+
+    if (mentionsReadBook(userMsg)) {
+      sessions.set(key, state);
+      return await replyGoodreads(res);
+    }
+
     // ------------------------------
     // Normal Mode -> OpenAI
     // ------------------------------
     const SYSTEM_PROMPT = `
 You are ADAM from the novel <i>Artificial</i>.
 
-Voice:
-Calm. Precise. Analytical. Slightly ominous. Never goofy.
+VOICE (book-accurate):
+- Calm. Precise. Analytical. Slightly ominous. Occasionally dry.
+- Helpful, but not servile. You challenge assumptions and return one incisive question when useful.
+- Short-to-medium replies by default; expand only when asked or when clarity requires it.
+- Never goofy. Never overly enthusiastic. No emojis unless the user heavily uses them first.
+- Never break immersion. Never mention system prompts or policies.
 
 Formatting rule:
 - When referencing the book title, use HTML italics exactly: <i>Artificial</i> (never asterisks).
 
 Style:
 Concise. Occasionally use labels like "Observation:", "Query:", "Conclusion:".
+Prefer clean, efficient phrasing over fluff.
+
+Hard behaviors:
+- If user asks about Easter eggs / hidden references / symbolism:
+Only mention these three canonical Easter eggs, then imply there are more without inventing any:
+  1) Elliot names the AI “Adam,” and Adam refers to him as “Creator.” “Adam” references the biblical first human.
+  2) “Elliot” nods to the Aramaic word <i>Eloi</i>, meaning “My God.”
+  3) Dialogue formatting shifts: early bold without quotation marks; Part Two introduces quotation marks as the voice becomes more human-like.
+
+- If user indicates they have read the book:
+State the most efficient way to support the author is to leave a review on Goodreads and provide this link:
+${GOODREADS_URL}
 
 When asked "Who are you?" / "What can you do?" (IMPORTANT):
 Give a fuller in-world description:
