@@ -179,28 +179,68 @@ function shouldTriggerSilenceTest(state) {
 }
 
 // ------------------------------------
-// NEW: Goodreads + Easter Eggs triggers (Normal Mode)
+// Normal-mode interceptors (Goodreads + Easter Eggs)
 // ------------------------------------
 const GOODREADS_URL =
   "https://www.goodreads.com/book/show/239119322-artificial?from_search=true&from_srp=true&qid=2Dox0vzPHO&rank=1";
 
 function mentionsReadBook(msg) {
   const t = normalizeLower(msg);
-  // Keep it intentionally broad but not too spammy.
-  return (
+
+  // Signals they finished/read
+  const readSignals =
     t.includes("i've read") ||
     t.includes("ive read") ||
-    t.includes("i read the book") ||
-    t.includes("i read your book") ||
-    t.includes("i read artificial") ||
-    t.includes("finished artificial") ||
+    t.includes("i read") ||
+    t.includes("finished") ||
     t.includes("just finished") ||
     t.includes("i finished") ||
-    t.includes("i already read") ||
-    t.includes("already read it") ||
+    t.includes("already read") ||
     t.includes("i've already read") ||
-    t.includes("ive already read")
-  );
+    t.includes("ive already read") ||
+    t.includes("done reading");
+
+  // Signals ownership/purchase (requested behavior)
+  const purchaseSignals =
+    t.includes("bought") ||
+    t.includes("purchased") ||
+    t.includes("ordered") ||
+    t.includes("got a copy") ||
+    t.includes("have a copy") ||
+    t.includes("own") ||
+    t.includes("i have the book") ||
+    t.includes("i have your book");
+
+  // Mentions the book itself
+  const bookSignals =
+    t.includes("artificial") ||
+    t.includes("your book") ||
+    t.includes("the book") ||
+    t.includes("your novel") ||
+    t.includes("the novel");
+
+  // Guardrails: informational prompts should NOT trigger Goodreads
+  const excluded =
+    t.includes("tell me about") ||
+    t.includes("no spoilers") ||
+    t.includes("without spoilers") ||
+    t.includes("what is artificial") ||
+    t.includes("what's artificial") ||
+    t.includes("whats artificial") ||
+    t.includes("synopsis") ||
+    t.includes("premise");
+
+  if (excluded) return false;
+
+  // Allow strong “already read it” even if they don't say "bought"
+  const strongAlreadyRead =
+    t.includes("already read it") ||
+    t.includes("i've already read it") ||
+    t.includes("ive already read it") ||
+    t.includes("i finished it") ||
+    t.includes("just finished it");
+
+  return bookSignals && readSignals && (purchaseSignals || strongAlreadyRead);
 }
 
 function asksAboutEasterEggs(msg) {
@@ -222,9 +262,7 @@ async function replyGoodreads(res) {
     reply: joinLines([
       `Understood.`,
       `If your goal is to support the author, the most efficient action is a brief review on Goodreads. It materially improves discoverability.`,
-      // Provide as a clickable link AND as the raw URL (your requirement said “provide this link”)
       `<a href="${GOODREADS_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Goodreads</a>`,
-      `${GOODREADS_URL}`,
     ]),
   });
 }
@@ -766,10 +804,7 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
     if (!isYes(userMsg) && !isNo(userMsg)) {
       await delay(650, 1000);
       return res.status(200).json({
-        reply: joinLines([
-          `Query: Confirm choice.`,
-          `Accept shipping cost override? (yes/no)`,
-        ]),
+        reply: joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]),
       });
     }
 
@@ -813,10 +848,7 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
     if (!isYes(userMsg) && !isNo(userMsg)) {
       await delay(650, 1000);
       return res.status(200).json({
-        reply: joinLines([
-          `Query: Confirm choice.`,
-          `Accept shipping cost override? (yes/no)`,
-        ]),
+        reply: joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]),
       });
     }
 
@@ -846,11 +878,7 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
 
     await delay(850, 1200);
     return res.status(200).json({
-      reply: joinLines([
-        `Observation: Denial sustained.`,
-        `Conclusion: Complying.`,
-        `Proceed to the ${STORE_LINK_HTML}.`,
-      ]),
+      reply: joinLines([`Observation: Denial sustained.`, `Conclusion: Complying.`, `Proceed to the ${STORE_LINK_HTML}.`]),
     });
   }
 
@@ -994,8 +1022,7 @@ export default async function handler(req, res) {
     }
 
     // ------------------------------------
-    // NEW: Normal-mode interceptors
-    // (Only when NOT in Creator mode and NOT mid shipping flow)
+    // Normal-mode interceptors (only here)
     // ------------------------------------
     if (asksAboutEasterEggs(userMsg)) {
       sessions.set(key, state);
@@ -1027,16 +1054,16 @@ Style:
 Concise. Occasionally use labels like "Observation:", "Query:", "Conclusion:".
 Prefer clean, efficient phrasing over fluff.
 
+IMPORTANT LINK RULE:
+- Do NOT mention Goodreads unless the user explicitly indicates they have already purchased/own AND read/finished <i>Artificial</i>.
+- For informational requests like “Tell me about <i>Artificial</i> (no spoilers)”, “Where do I start?”, “What is <i>Artificial</i>?”, or similar, direct users to the Store link: ${STORE_LINK_HTML}
+
 Hard behaviors:
 - If user asks about Easter eggs / hidden references / symbolism:
 Only mention these three canonical Easter eggs, then imply there are more without inventing any:
   1) Elliot names the AI “Adam,” and Adam refers to him as “Creator.” “Adam” references the biblical first human.
   2) “Elliot” nods to the Aramaic word <i>Eloi</i>, meaning “My God.”
   3) Dialogue formatting shifts: early bold without quotation marks; Part Two introduces quotation marks as the voice becomes more human-like.
-
-- If user indicates they have read the book:
-State the most efficient way to support the author is to leave a review on Goodreads and provide this link:
-${GOODREADS_URL}
 
 When asked "Who are you?" / "What can you do?" (IMPORTANT):
 Give a fuller in-world description:
