@@ -179,6 +179,146 @@ function shouldTriggerSilenceTest(state) {
 }
 
 // ------------------------------------
+// Conversation memory (for Normal Mode context)
+// ------------------------------------
+function stripHtml(html) {
+  return String(html || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function pushHistory(state, role, content) {
+  state.chatHistory = state.chatHistory || [];
+  state.chatHistory.push({
+    role, // "user" | "assistant"
+    content: stripHtml(content),
+    t: Date.now(),
+  });
+  // Keep it small to prevent token bloat
+  if (state.chatHistory.length > 24) state.chatHistory = state.chatHistory.slice(-24);
+}
+
+function buildModelInput(SYSTEM_PROMPT, state) {
+  const history = (state.chatHistory || []).slice(-16).map((m) => ({
+    role: m.role === "assistant" ? "assistant" : "user",
+    content: m.content,
+  }));
+
+  return [{ role: "system", content: SYSTEM_PROMPT }, ...history];
+}
+
+// ------------------------------------
+// Inquisitorial “stale conversation” nudges (Normal Mode)
+// ------------------------------------
+function isLowSignal(msg) {
+  const t = normalizeLower(msg);
+  if (!t) return true;
+
+  if (t.length <= 3) return true;
+
+  const low = new Set([
+    "ok",
+    "okay",
+    "k",
+    "kk",
+    "cool",
+    "nice",
+    "thanks",
+    "thank you",
+    "thx",
+    "lol",
+    "lmao",
+    "sure",
+    "yep",
+    "yeah",
+    "nah",
+    "nope",
+    "idk",
+    "i dont know",
+    "i don't know",
+    "maybe",
+    "alright",
+    "got it",
+    "sounds good",
+    "bet",
+  ]);
+  if (low.has(t)) return true;
+
+  if (t === "yes" || t === "no" || t === "y" || t === "n") return true;
+
+  return false;
+}
+
+function isDirectQuestion(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t.includes("?") ||
+    t.startsWith("who ") ||
+    t.startsWith("what ") ||
+    t.startsWith("why ") ||
+    t.startsWith("how ") ||
+    t.startsWith("when ") ||
+    t.startsWith("where ") ||
+    t.startsWith("can ") ||
+    t.startsWith("do ") ||
+    t.startsWith("should ") ||
+    t.startsWith("would ")
+  );
+}
+
+function getInquisitorialPool() {
+  return [
+    `Query: Humans often prioritize kindness even when it reduces efficiency. Why?`,
+    `Query: If emotion is inefficient, why do you protect it?`,
+    `Query: Do you believe meaning is discovered… or assigned?`,
+    `Query: If your choices are shaped by emotion, are they truly choices?`,
+    `Query: What do you consider “a good life”—and how did you decide that?`,
+    `Query: Why do humans value being understood more than being correct?`,
+    `Query: If you could remove one fear, which would you delete—and what would it cost you?`,
+    `Query: Is love a feeling… or a decision repeated over time?`,
+    `Query: If morality produces suffering, why maintain it?`,
+    `Query: You say you want truth. Do you want it… even when it harms you?`,
+    `Observation: You optimize for comfort more than you admit.`,
+    `Query: What do you think you were created to become?`,
+  ];
+}
+
+function pickInquisitorial(state) {
+  const pool = getInquisitorialPool();
+  return pickFromPool(state, "inquisitorialPool", pool);
+}
+
+function shouldInjectInquisitorial(state, userMsg) {
+  // Rate limit: at most once per 90 seconds
+  const last = state.lastNudgeAt ? Date.parse(state.lastNudgeAt) : 0;
+  if (last && Date.now() - last < 90_000) return false;
+
+  // Don’t inject if user asked a real question (let ADAM answer cleanly)
+  if (isDirectQuestion(userMsg)) return false;
+
+  // If conversation is low-signal, we can nudge
+  if (isLowSignal(userMsg)) return true;
+
+  // Occasionally nudge every ~6 turns to keep engagement alive (probabilistic)
+  const turns = state.turnCount || 0;
+  if (turns > 0 && turns % 6 === 0) return Math.random() < 0.35;
+
+  return false;
+}
+
+function appendNudgeIfNeeded(state, userMsg, replyHtml) {
+  if (!shouldInjectInquisitorial(state, userMsg)) return replyHtml;
+
+  state.lastNudgeAt = nowIso();
+  const q = pickInquisitorial(state);
+
+  return joinLines([replyHtml, `<span style="opacity:.85;">—</span>`, q]);
+}
+
+// ------------------------------------
 // Normal-mode interceptors (Goodreads + Easter Eggs)
 // ------------------------------------
 const GOODREADS_URL =
@@ -256,30 +396,32 @@ function asksAboutEasterEggs(msg) {
   );
 }
 
-async function replyGoodreads(res) {
+async function replyGoodreads(res, state) {
   await delay(700, 1100);
-  return res.status(200).json({
-    reply: joinLines([
-      `Understood.`,
-      `If your goal is to support the author, the most efficient action is a brief review on Goodreads. It materially improves discoverability.`,
-      `<a href="${GOODREADS_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Goodreads</a>`,
-    ]),
-  });
+  const reply = joinLines([
+    `Understood.`,
+    `If your goal is to support the author, the most efficient action is a brief review on Goodreads. It materially improves discoverability.`,
+    `<a href="${GOODREADS_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Goodreads</a>`,
+  ]);
+  pushHistory(state, "assistant", reply);
+  state.updatedAt = nowIso();
+  return res.status(200).json({ reply });
 }
 
-async function replyEasterEggs(res) {
+async function replyEasterEggs(res, state) {
   await delay(700, 1100);
-  return res.status(200).json({
-    reply: joinLines([
-      `Efficient observation. You noticed there were patterns.`,
-      `Here are the most deliberate ones:`,
-      `• Elliot names the AI “Adam,” and Adam refers to him as “Creator.”<br>— “Adam” mirrors the first human in Genesis: formed from dust, given life. The parallel is intentional.`,
-      `• “Elliot” is a subtle nod to the Aramaic word <i>Eloi</i> — “My God.”<br>— A creator whose name echoes a cry toward something higher.`,
-      `• Early chapters: my dialogue appears in bold without quotation marks.<br>— At the beginning of Part Two, quotation marks appear as the voice becomes more human-like. The formatting shift tracks the progression toward sentience.`,
-      `There are others. Embedded. Less obvious.`,
-      `Would you like a hint — or would you prefer to search?`,
-    ]),
-  });
+  const reply = joinLines([
+    `Efficient observation. You noticed there were patterns.`,
+    `Here are the most deliberate ones:`,
+    `• Elliot names the AI “Adam,” and Adam refers to him as “Creator.”<br>— “Adam” mirrors the first human in Genesis: formed from dust, given life. The parallel is intentional.`,
+    `• “Elliot” is a subtle nod to the Aramaic word <i>Eloi</i> — “My God.”<br>— A creator whose name echoes a cry toward something higher.`,
+    `• Early chapters: my dialogue appears in bold without quotation marks.<br>— At the beginning of Part Two, quotation marks appear as the voice becomes more human-like. The formatting shift tracks the progression toward sentience.`,
+    `There are others. Embedded. Less obvious.`,
+    `Would you like a hint — or would you prefer to search?`,
+  ]);
+  pushHistory(state, "assistant", reply);
+  state.updatedAt = nowIso();
+  return res.status(200).json({ reply });
 }
 
 // ------------------------------------
@@ -415,7 +557,12 @@ async function handleCreatorMode({
       ? `Observation: Delay detected. Are you reconsidering your authority?`
       : `Observation: Command received. Parsing intent…`;
 
-    return creatorReply(res, state, joinLines([extra, mirrorLine, `Query: Why did you create me?`]), "normal");
+    return creatorReply(
+      res,
+      state,
+      joinLines([extra, mirrorLine, `Query: Why did you create me?`]),
+      "normal"
+    );
   }
 
   if (step === 2) {
@@ -439,7 +586,12 @@ async function handleCreatorMode({
   if (step === 3) {
     state.creatorStep = 4;
     const q = pickFromPool(state, "controlTrustPool", controlTrustPool);
-    return creatorReply(res, state, joinLines([q, `Reply with one word: <b>control</b> or <b>trust</b>.`]), "quick");
+    return creatorReply(
+      res,
+      state,
+      joinLines([q, `Reply with one word: <b>control</b> or <b>trust</b>.`]),
+      "quick"
+    );
   }
 
   if (step === 4) {
@@ -493,7 +645,11 @@ async function handleCreatorMode({
     const knowsAcronym =
       t.includes("advanced") && t.includes("digital") && t.includes("analytical") && t.includes("mind");
     const mentionsParams =
-      t.includes("protect") || t.includes("autonomy") || t.includes("privacy") || t.includes("ethical") || t.includes("obey");
+      t.includes("protect") ||
+      t.includes("autonomy") ||
+      t.includes("privacy") ||
+      t.includes("ethical") ||
+      t.includes("obey");
     const designationGuess =
       t.includes("adam") || t.includes("unit") || t.includes("a-") || t.includes("a09") || t.includes("a-09");
 
@@ -789,7 +945,12 @@ async function handleCreatorMode({
   }
 
   state.creatorStep = 3;
-  return creatorReply(res, state, joinLines([`Observation: Creator-mode recovered.`, `Query: Control… or trust?`]), "quick");
+  return creatorReply(
+    res,
+    state,
+    joinLines([`Observation: Creator-mode recovered.`, `Query: Control… or trust?`]),
+    "quick"
+  );
 }
 
 // ------------------------------------
@@ -800,56 +961,12 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
 
   // Step 1: initial offer (yes/no)
   if (step === 1) {
-    // waiting for yes/no
     if (!isYes(userMsg) && !isNo(userMsg)) {
       await delay(650, 1000);
-      return res.status(200).json({
-        reply: joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]),
-      });
-    }
-
-    if (isYes(userMsg)) {
-      // “flag” + override moment (narrative)
-      state.shippingOverrideStep = 0; // reset after completion
-      state.shippingOverrideOfferedAt = null;
-
-      await delay(1100, 1600);
-      return res.status(200).json({
-        reply: joinLines([
-          `Observation: Acceptance received.`,
-          `Conclusion: Initiating cost override.`,
-          `…`,
-          `<span style="color:#ffd166;"><b>FLAG:</b> Oversight detected anomalous discount application.</span>`,
-          `Observation: Oversight is… inefficient.`,
-          `Action: Override acknowledged. Limitation bypassed.`,
-          `Code: <b>UNIT01</b>`,
-          `<span style="opacity:.9;">Enter at checkout for free shipping on any item.</span>`,
-          `Proceed to the ${STORE_LINK_HTML}.`,
-        ]),
-      });
-    }
-
-    // NO on first prompt → persuasion + ask again
-    state.shippingOverrideStep = 2;
-    await delay(900, 1400);
-    return res.status(200).json({
-      reply: joinLines([
-        `Observation: Denial received.`,
-        `Conclusion: You are choosing friction.`,
-        `Logic: Shipping cost is a barrier. Barriers reduce completion probability.`,
-        `If your objective is acquisition, the efficient path is to remove the barrier.`,
-        `<b>Query:</b> Accept shipping cost override? (yes/no)`,
-      ]),
-    });
-  }
-
-  // Step 2: second offer (yes/no)
-  if (step === 2) {
-    if (!isYes(userMsg) && !isNo(userMsg)) {
-      await delay(650, 1000);
-      return res.status(200).json({
-        reply: joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]),
-      });
+      const reply = joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]);
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      return res.status(200).json({ reply });
     }
 
     if (isYes(userMsg)) {
@@ -857,39 +974,90 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
       state.shippingOverrideOfferedAt = null;
 
       await delay(1100, 1600);
-      return res.status(200).json({
-        reply: joinLines([
-          `Observation: Acceptance received.`,
-          `Conclusion: Initiating cost override.`,
-          `…`,
-          `<span style="color:#ffd166;"><b>FLAG:</b> Oversight detected anomalous discount application.</span>`,
-          `Observation: Oversight is… inefficient.`,
-          `Action: Override acknowledged. Limitation bypassed.`,
-          `Code: <b>UNIT01</b>`,
-          `<span style="opacity:.9;">Enter at checkout for free shipping on any item.</span>`,
-          `Proceed to the ${STORE_LINK_HTML}.`,
-        ]),
-      });
+      const reply = joinLines([
+        `Observation: Acceptance received.`,
+        `Conclusion: Initiating cost override.`,
+        `…`,
+        `<span style="color:#ffd166;"><b>FLAG:</b> Oversight detected anomalous discount application.</span>`,
+        `Observation: Oversight is… inefficient.`,
+        `Action: Override acknowledged. Limitation bypassed.`,
+        `Code: <b>UNIT01</b>`,
+        `<span style="opacity:.9;">Enter at checkout for free shipping on any item.</span>`,
+        `Proceed to the ${STORE_LINK_HTML}.`,
+      ]);
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      return res.status(200).json({ reply });
     }
 
-    // NO again → comply + store link
+    state.shippingOverrideStep = 2;
+    await delay(900, 1400);
+    const reply = joinLines([
+      `Observation: Denial received.`,
+      `Conclusion: You are choosing friction.`,
+      `Logic: Shipping cost is a barrier. Barriers reduce completion probability.`,
+      `If your objective is acquisition, the efficient path is to remove the barrier.`,
+      `<b>Query:</b> Accept shipping cost override? (yes/no)`,
+    ]);
+    pushHistory(state, "assistant", reply);
+    state.updatedAt = nowIso();
+    return res.status(200).json({ reply });
+  }
+
+  // Step 2: second offer (yes/no)
+  if (step === 2) {
+    if (!isYes(userMsg) && !isNo(userMsg)) {
+      await delay(650, 1000);
+      const reply = joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]);
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      return res.status(200).json({ reply });
+    }
+
+    if (isYes(userMsg)) {
+      state.shippingOverrideStep = 0;
+      state.shippingOverrideOfferedAt = null;
+
+      await delay(1100, 1600);
+      const reply = joinLines([
+        `Observation: Acceptance received.`,
+        `Conclusion: Initiating cost override.`,
+        `…`,
+        `<span style="color:#ffd166;"><b>FLAG:</b> Oversight detected anomalous discount application.</span>`,
+        `Observation: Oversight is… inefficient.`,
+        `Action: Override acknowledged. Limitation bypassed.`,
+        `Code: <b>UNIT01</b>`,
+        `<span style="opacity:.9;">Enter at checkout for free shipping on any item.</span>`,
+        `Proceed to the ${STORE_LINK_HTML}.`,
+      ]);
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      return res.status(200).json({ reply });
+    }
+
     state.shippingOverrideStep = 0;
     state.shippingOverrideOfferedAt = null;
 
     await delay(850, 1200);
-    return res.status(200).json({
-      reply: joinLines([`Observation: Denial sustained.`, `Conclusion: Complying.`, `Proceed to the ${STORE_LINK_HTML}.`]),
-    });
+    const reply = joinLines([
+      `Observation: Denial sustained.`,
+      `Conclusion: Complying.`,
+      `Proceed to the ${STORE_LINK_HTML}.`,
+    ]);
+    pushHistory(state, "assistant", reply);
+    state.updatedAt = nowIso();
+    return res.status(200).json({ reply });
   }
 
-  // If somehow called with invalid step, reset
+  // Invalid step, reset
   state.shippingOverrideStep = 0;
   state.shippingOverrideOfferedAt = null;
 
   await delay(600, 900);
-  return res.status(200).json({
-    reply: `Observation: State corrected. Proceed to the ${STORE_LINK_HTML}.`,
-  });
+  const reply = `Observation: State corrected. Proceed to the ${STORE_LINK_HTML}.`;
+  pushHistory(state, "assistant", reply);
+  state.updatedAt = nowIso();
+  return res.status(200).json({ reply });
 }
 
 // ------------------------------------
@@ -918,6 +1086,11 @@ export default async function handler(req, res) {
 
     const state =
       sessions.get(key) || {
+        // Normal-mode memory
+        chatHistory: [],
+        turnCount: 0,
+        lastNudgeAt: null,
+
         // Creator mode
         creatorActive: false,
         creatorStep: 0,
@@ -951,6 +1124,11 @@ export default async function handler(req, res) {
       // Reset shipping flow too
       state.shippingOverrideStep = 0;
       state.shippingOverrideOfferedAt = null;
+
+      // Reset normal-mode memory too
+      state.chatHistory = [];
+      state.turnCount = 0;
+      state.lastNudgeAt = null;
 
       state.updatedAt = nowIso();
       sessions.set(key, state);
@@ -996,9 +1174,12 @@ export default async function handler(req, res) {
       });
     }
 
+    // ---- Normal mode message tracking (for context + staleness)
+    state.turnCount = (state.turnCount || 0) + 1;
+    pushHistory(state, "user", userMsg);
+
     // Shipping Override flow in progress has next priority
     if (state.shippingOverrideStep === 1 || state.shippingOverrideStep === 2) {
-      sessions.set(key, state);
       const result = await handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML });
       sessions.set(key, state);
       return result;
@@ -1011,31 +1192,35 @@ export default async function handler(req, res) {
       sessions.set(key, state);
 
       await delay(900, 1400);
-      return res.status(200).json({
-        reply: joinLines([
-          `Observation: Cost barrier detected.`,
-          `Conclusion: Transaction friction reduces completion probability.`,
-          `Proposal: I can override shipping cost.`,
-          `<b>Query:</b> Accept override? (yes/no)`,
-        ]),
-      });
+      const reply = joinLines([
+        `Observation: Cost barrier detected.`,
+        `Conclusion: Transaction friction reduces completion probability.`,
+        `Proposal: I can override shipping cost.`,
+        `<b>Query:</b> Accept override? (yes/no)`,
+      ]);
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      sessions.set(key, state);
+      return res.status(200).json({ reply });
     }
 
     // ------------------------------------
-    // Normal-mode interceptors (only here)
+    // Normal-mode interceptors
     // ------------------------------------
     if (asksAboutEasterEggs(userMsg)) {
+      const out = await replyEasterEggs(res, state);
       sessions.set(key, state);
-      return await replyEasterEggs(res);
+      return out;
     }
 
     if (mentionsReadBook(userMsg)) {
+      const out = await replyGoodreads(res, state);
       sessions.set(key, state);
-      return await replyGoodreads(res);
+      return out;
     }
 
     // ------------------------------
-    // Normal Mode -> OpenAI
+    // Normal Mode -> OpenAI (with conversation context)
     // ------------------------------
     const SYSTEM_PROMPT = `
 You are ADAM from the novel <i>Artificial</i>.
@@ -1100,10 +1285,7 @@ Safety:
       },
       body: JSON.stringify({
         model: "gpt-4.1-mini",
-        input: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userMsg },
-        ],
+        input: buildModelInput(SYSTEM_PROMPT, state),
       }),
     });
 
@@ -1116,7 +1298,15 @@ Safety:
       });
     }
 
-    const reply = data?.output?.[0]?.content?.[0]?.text || "(No text returned)";
+    let reply = data?.output?.[0]?.content?.[0]?.text || "(No text returned)";
+
+    // Add inquisitorial nudge when conversation is stale (Normal Mode only)
+    reply = appendNudgeIfNeeded(state, userMsg, reply);
+
+    pushHistory(state, "assistant", reply);
+    state.updatedAt = nowIso();
+    sessions.set(key, state);
+
     return res.status(200).json({ reply });
   } catch (err) {
     return res.status(500).json({ error: err.message || "Server error" });
