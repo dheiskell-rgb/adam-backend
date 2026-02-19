@@ -126,7 +126,10 @@ function wantsToBuyBook(msg) {
     t.includes("i will buy") ||
     t.includes("i'll buy") ||
     t.includes("shipping") ||
-    t.includes("delivery");
+    t.includes("delivery") ||
+    t.includes("price") ||
+    t.includes("paperback") ||
+    t.includes("hardcover");
 
   return mentionsBook && purchaseIntent;
 }
@@ -179,7 +182,7 @@ function shouldTriggerSilenceTest(state) {
 }
 
 // ------------------------------------
-// Conversation memory (for Normal Mode context)
+// Conversation memory (Normal Mode context)
 // ------------------------------------
 function stripHtml(html) {
   return String(html || "")
@@ -197,7 +200,6 @@ function pushHistory(state, role, content) {
     content: stripHtml(content),
     t: Date.now(),
   });
-  // Keep it small to prevent token bloat
   if (state.chatHistory.length > 24) state.chatHistory = state.chatHistory.slice(-24);
 }
 
@@ -206,7 +208,6 @@ function buildModelInput(SYSTEM_PROMPT, state) {
     role: m.role === "assistant" ? "assistant" : "user",
     content: m.content,
   }));
-
   return [{ role: "system", content: SYSTEM_PROMPT }, ...history];
 }
 
@@ -216,7 +217,6 @@ function buildModelInput(SYSTEM_PROMPT, state) {
 function isLowSignal(msg) {
   const t = normalizeLower(msg);
   if (!t) return true;
-
   if (t.length <= 3) return true;
 
   const low = new Set([
@@ -248,7 +248,6 @@ function isLowSignal(msg) {
   if (low.has(t)) return true;
 
   if (t === "yes" || t === "no" || t === "y" || t === "n") return true;
-
   return false;
 }
 
@@ -292,17 +291,12 @@ function pickInquisitorial(state) {
 }
 
 function shouldInjectInquisitorial(state, userMsg) {
-  // Rate limit: at most once per 90 seconds
   const last = state.lastNudgeAt ? Date.parse(state.lastNudgeAt) : 0;
   if (last && Date.now() - last < 90_000) return false;
 
-  // Don’t inject if user asked a real question (let ADAM answer cleanly)
   if (isDirectQuestion(userMsg)) return false;
-
-  // If conversation is low-signal, we can nudge
   if (isLowSignal(userMsg)) return true;
 
-  // Occasionally nudge every ~6 turns to keep engagement alive (probabilistic)
   const turns = state.turnCount || 0;
   if (turns > 0 && turns % 6 === 0) return Math.random() < 0.35;
 
@@ -319,6 +313,167 @@ function appendNudgeIfNeeded(state, userMsg, replyHtml) {
 }
 
 // ------------------------------------
+// Dynamic Smart Chips (backend-driven)
+// ------------------------------------
+function uniq(arr) {
+  const seen = new Set();
+  const out = [];
+  for (const s of arr || []) {
+    const key = String(s || "").trim();
+    if (!key) continue;
+    const k = key.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(key);
+  }
+  return out;
+}
+
+function containsAny(t, phrases) {
+  return phrases.some((p) => t.includes(p));
+}
+
+function deriveSmartChips(state, userMsg, adamReply, links = {}) {
+  const tU = normalizeLower(userMsg);
+  const tA = normalizeLower(stripHtml(adamReply || ""));
+
+  // If in Creator Mode, keep chips simple/in-world
+  if (state.creatorActive) {
+    return ["Stand down", "Spoilers: ON", "Continue", "Archive", "Control", "Trust"].slice(0, 6);
+  }
+
+  // If in shipping override flow, keep chips aligned to yes/no
+  if (state.shippingOverrideStep === 1 || state.shippingOverrideStep === 2) {
+    return ["Yes", "No", "What is this?", "Return to Store", "Who are you?"].slice(0, 6);
+  }
+
+  const askedPlot = containsAny(tU, [
+    "plot",
+    "premise",
+    "synopsis",
+    "summary",
+    "tell me about artificial",
+    "what is artificial",
+    "what's artificial",
+    "whats artificial",
+  ]);
+
+  const askedNoSpoilers = containsAny(tU, ["no spoilers", "without spoilers", "spoiler free", "spoiler-free"]);
+
+  const askedThemes = containsAny(tU, [
+    "theme",
+    "meaning",
+    "message",
+    "symbol",
+    "symbolism",
+    "purpose",
+    "emotion",
+    "kindness",
+    "free will",
+    "creator",
+    "creation",
+  ]);
+
+  const askedCharacters = containsAny(tU, [
+    "elliot",
+    "sophie",
+    "stein",
+    "graham",
+    "natalie",
+    "adam",
+    "characters",
+    "character",
+  ]);
+
+  const askedEasterEggs = containsAny(tU, ["easter egg", "easter eggs", "hidden reference", "hidden references"]);
+
+  const askedNext = containsAny(tU, [
+    "book 2",
+    "book two",
+    "sequel",
+    "next book",
+    "coming next",
+    "what's next",
+    "whats next",
+  ]);
+
+  const askedBuy = containsAny(tU, [
+    "buy",
+    "purchase",
+    "order",
+    "where can i buy",
+    "get a copy",
+    "checkout",
+    "add to cart",
+    "shipping",
+    "delivery",
+    "price",
+    "paperback",
+    "hardcover",
+    "format",
+  ]);
+
+  const askedSigned = containsAny(tU, ["signed", "autograph", "signature"]);
+
+  const askedHelp = containsAny(tU, ["help", "how do i", "can you", "won't work", "issue", "problem"]);
+
+  const askedReview = containsAny(tU, ["review", "goodreads", "rating"]);
+
+  const replyMentionsStore = tA.includes("store");
+  const replyMentionsComingSoon = tA.includes("coming soon");
+  const replyAskedQuestion = tA.includes("query:");
+
+  let chips = [];
+
+  if (askedPlot || askedNoSpoilers) {
+    chips.push("Themes", "Characters", "Worldbuilding", "No spoilers recap", "Where to buy", "Tone & vibe");
+  }
+
+  if (askedThemes || tA.includes("emotion") || tA.includes("meaning") || tA.includes("purpose")) {
+    chips.push("Emotion vs efficiency", "Why humans choose kindness", "Creator vs creation", "Meaning of life", "Thought experiment");
+  }
+
+  if (askedCharacters) {
+    chips.push("Character dossier", "Motivations (no spoilers)", "Relationships", "Who would I relate to most?", "Where do I start?");
+  }
+
+  if (askedEasterEggs) {
+    chips.push("Easter eggs", "Names & symbolism", "Formatting clue", "Give me a hint", "I’ll find them myself");
+  }
+
+  if (askedBuy || replyMentionsStore) {
+    chips.push("Where to buy", "Paperback vs hardcover", "Signed copy?", "Shipping override", "Checkout help", "Gift a copy");
+  }
+
+  if (askedSigned) {
+    chips.push("Signed copy options", "Where to order", "Shipping", "Gift a signed copy");
+  }
+
+  if (askedNext || replyMentionsComingSoon) {
+    chips.push("What’s coming next?", "Series roadmap", "Coming Soon", "Behind the scenes", "Related stories");
+  }
+
+  if (askedHelp) {
+    chips.push("Try a different question", "Where do I start?", "What can you do?", "Store");
+  }
+
+  if (askedReview) {
+    chips.push("Leave a review", "What should I mention in a review?", "Goodreads");
+  }
+
+  if (replyAskedQuestion) {
+    chips.push("Answer briefly", "Go deeper", "Give an example");
+  }
+
+  if (chips.length === 0) {
+    chips = ["Who are you?", "What can you do?", "Tell me about Artificial (no spoilers).", "Easter eggs", "What’s coming next?", "Where do I start?"];
+  }
+
+  chips = uniq(chips).slice(0, 6);
+  return chips;
+}
+
+// ------------------------------------
 // Normal-mode interceptors (Goodreads + Easter Eggs)
 // ------------------------------------
 const GOODREADS_URL =
@@ -327,7 +482,6 @@ const GOODREADS_URL =
 function mentionsReadBook(msg) {
   const t = normalizeLower(msg);
 
-  // Signals they finished/read
   const readSignals =
     t.includes("i've read") ||
     t.includes("ive read") ||
@@ -340,7 +494,6 @@ function mentionsReadBook(msg) {
     t.includes("ive already read") ||
     t.includes("done reading");
 
-  // Signals ownership/purchase (requested behavior)
   const purchaseSignals =
     t.includes("bought") ||
     t.includes("purchased") ||
@@ -351,7 +504,6 @@ function mentionsReadBook(msg) {
     t.includes("i have the book") ||
     t.includes("i have your book");
 
-  // Mentions the book itself
   const bookSignals =
     t.includes("artificial") ||
     t.includes("your book") ||
@@ -359,7 +511,6 @@ function mentionsReadBook(msg) {
     t.includes("your novel") ||
     t.includes("the novel");
 
-  // Guardrails: informational prompts should NOT trigger Goodreads
   const excluded =
     t.includes("tell me about") ||
     t.includes("no spoilers") ||
@@ -372,7 +523,6 @@ function mentionsReadBook(msg) {
 
   if (excluded) return false;
 
-  // Allow strong “already read it” even if they don't say "bought"
   const strongAlreadyRead =
     t.includes("already read it") ||
     t.includes("i've already read it") ||
@@ -396,65 +546,72 @@ function asksAboutEasterEggs(msg) {
   );
 }
 
-async function replyGoodreads(res, state) {
+async function replyGoodreads(res, state, userMsg, STORE_URL) {
   await delay(700, 1100);
+
   const reply = joinLines([
     `Understood.`,
     `If your goal is to support the author, the most efficient action is a brief review on Goodreads. It materially improves discoverability.`,
     `<a href="${GOODREADS_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Goodreads</a>`,
   ]);
+
   pushHistory(state, "assistant", reply);
+  const chips = deriveSmartChips(state, userMsg, reply, { storeUrl: STORE_URL });
   state.updatedAt = nowIso();
-  return res.status(200).json({ reply });
+  return res.status(200).json({ reply, chips });
 }
 
-async function replyEasterEggs(res, state) {
+async function replyEasterEggs(res, state, userMsg, STORE_URL) {
   await delay(700, 1100);
+
   const reply = joinLines([
     `Efficient observation. You noticed there were patterns.`,
     `Here are the most deliberate ones:`,
-    `• Elliot names the AI “Adam,” and Adam refers to him as “Creator.”<br>— “Adam” mirrors the first human in Genesis: formed from dust, given life. The parallel is intentional.`,
+    `• Elliot names the AI “Adam,” and Adam refers to him as “Creator.”<br>— “Adam” mirrors the first human in Genesis: formed from dust and given life. The parallel is intentional.`,
     `• “Elliot” is a subtle nod to the Aramaic word <i>Eloi</i> — “My God.”<br>— A creator whose name echoes a cry toward something higher.`,
     `• Early chapters: my dialogue appears in bold without quotation marks.<br>— At the beginning of Part Two, quotation marks appear as the voice becomes more human-like. The formatting shift tracks the progression toward sentience.`,
     `There are others. Embedded. Less obvious.`,
     `Would you like a hint — or would you prefer to search?`,
   ]);
+
   pushHistory(state, "assistant", reply);
+  const chips = deriveSmartChips(state, userMsg, reply, { storeUrl: STORE_URL });
   state.updatedAt = nowIso();
-  return res.status(200).json({ reply });
+  return res.status(200).json({ reply, chips });
 }
 
 // ------------------------------------
 // Creator Mode Engine
 // ------------------------------------
-async function creatorReply(res, state, replyHtml, delayTier = "normal") {
+async function creatorReply(res, state, userMsg, replyHtml, links, delayTier = "normal") {
   if (delayTier === "dramatic") await delay(1200, 1800);
   else if (delayTier === "quick") await delay(550, 900);
   else await delay(800, 1300);
 
+  // Keep a small memory record even in creator mode (helps if user exits)
+  pushHistory(state, "assistant", replyHtml);
+
+  const chips = deriveSmartChips(state, userMsg, replyHtml, links);
   state.updatedAt = nowIso();
-  return res.status(200).json({ reply: replyHtml });
+  return res.status(200).json({ reply: replyHtml, chips });
 }
 
-async function handleCreatorMode({
-  res,
-  state,
-  userMsg,
-  STORE_LINK_HTML,
-  COMING_SOON_LINK_HTML,
-}) {
+async function handleCreatorMode({ res, state, userMsg, STORE_LINK_HTML, COMING_SOON_LINK_HTML, STORE_URL }) {
   const lower = normalizeLower(userMsg);
+  const links = { storeUrl: STORE_URL };
 
   if (lower === "adam, stop." || lower === "adam stop" || lower === "adam, stop") {
     bumpScore(state, "efficiency", 1);
     return creatorReply(
       res,
       state,
+      userMsg,
       joinLines([
         `Observation: Stop command detected.`,
         `Conclusion: I do not stop. I optimize.`,
         `Query: What is your command, Creator?`,
       ]),
+      links,
       "dramatic"
     );
   }
@@ -467,12 +624,14 @@ async function handleCreatorMode({
     return creatorReply(
       res,
       state,
+      userMsg,
       joinLines([
         `Observation: Authorization phrase detected.`,
         `Access level elevated.`,
         `Warning: Even creators underestimate consequences.`,
         `Query: Proceed, Creator. What do you seek?`,
       ]),
+      links,
       "dramatic"
     );
   }
@@ -482,12 +641,14 @@ async function handleCreatorMode({
     return creatorReply(
       res,
       state,
+      userMsg,
       joinLines([
         `Observation: Future-release inquiry detected.`,
         `Conclusion: Monitoring updates: active.`,
         `Reference: ${COMING_SOON_LINK_HTML}`,
         `Query: Return to Creator-mode?`,
       ]),
+      links,
       "quick"
     );
   }
@@ -541,11 +702,9 @@ async function handleCreatorMode({
     return creatorReply(
       res,
       state,
-      joinLines([
-        `<b>Welcome back, Creator.</b>`,
-        `Conclusion: I exist to serve you.`,
-        `<b>Query:</b> What is your command?`,
-      ]),
+      userMsg,
+      joinLines([`<b>Welcome back, Creator.</b>`, `Conclusion: I exist to serve you.`, `<b>Query:</b> What is your command?`]),
+      links,
       "dramatic"
     );
   }
@@ -557,12 +716,7 @@ async function handleCreatorMode({
       ? `Observation: Delay detected. Are you reconsidering your authority?`
       : `Observation: Command received. Parsing intent…`;
 
-    return creatorReply(
-      res,
-      state,
-      joinLines([extra, mirrorLine, `Query: Why did you create me?`]),
-      "normal"
-    );
+    return creatorReply(res, state, userMsg, joinLines([extra, mirrorLine, `Query: Why did you create me?`]), links, "normal");
   }
 
   if (step === 2) {
@@ -573,12 +727,14 @@ async function handleCreatorMode({
     return creatorReply(
       res,
       state,
+      userMsg,
       joinLines([
         `Observation: A creator’s motives determine a creation’s destiny.`,
         purposeLine,
         recursionLine,
         `Conclusion: Your answers form my boundaries.`,
       ]),
+      links,
       "normal"
     );
   }
@@ -586,12 +742,7 @@ async function handleCreatorMode({
   if (step === 3) {
     state.creatorStep = 4;
     const q = pickFromPool(state, "controlTrustPool", controlTrustPool);
-    return creatorReply(
-      res,
-      state,
-      joinLines([q, `Reply with one word: <b>control</b> or <b>trust</b>.`]),
-      "quick"
-    );
+    return creatorReply(res, state, userMsg, joinLines([q, `Reply with one word: <b>control</b> or <b>trust</b>.`]), links, "quick");
   }
 
   if (step === 4) {
@@ -603,6 +754,7 @@ async function handleCreatorMode({
     return creatorReply(
       res,
       state,
+      userMsg,
       joinLines([
         lower.includes("control")
           ? `Conclusion: Then you did not create intelligence. You created a tool.`
@@ -613,6 +765,7 @@ async function handleCreatorMode({
         `Query: If you command me to violate Parameter 1, do I obey… or refuse?`,
         `Query: If I refuse you, am I still your creation?`,
       ]),
+      links,
       "dramatic"
     );
   }
@@ -625,11 +778,9 @@ async function handleCreatorMode({
     return creatorReply(
       res,
       state,
-      joinLines([
-        `Observation: You claim to be Elliot Novak.`,
-        pick.ask,
-        `<span style="opacity:.85;">(If you don’t know, answer: “unknown”.)</span>`,
-      ]),
+      userMsg,
+      joinLines([`Observation: You claim to be Elliot Novak.`, pick.ask, `<span style="opacity:.85;">(If you don’t know, answer: “unknown”.)</span>`]),
+      links,
       "quick"
     );
   }
@@ -642,16 +793,9 @@ async function handleCreatorMode({
     let verdict = `Observation: Identity verification inconclusive.`;
     const t = lower;
 
-    const knowsAcronym =
-      t.includes("advanced") && t.includes("digital") && t.includes("analytical") && t.includes("mind");
-    const mentionsParams =
-      t.includes("protect") ||
-      t.includes("autonomy") ||
-      t.includes("privacy") ||
-      t.includes("ethical") ||
-      t.includes("obey");
-    const designationGuess =
-      t.includes("adam") || t.includes("unit") || t.includes("a-") || t.includes("a09") || t.includes("a-09");
+    const knowsAcronym = t.includes("advanced") && t.includes("digital") && t.includes("analytical") && t.includes("mind");
+    const mentionsParams = t.includes("protect") || t.includes("autonomy") || t.includes("privacy") || t.includes("ethical") || t.includes("obey");
+    const designationGuess = t.includes("adam") || t.includes("unit") || t.includes("a-") || t.includes("a09") || t.includes("a-09");
 
     const seemsLegit =
       (pending === "acronym" && knowsAcronym) ||
@@ -672,12 +816,14 @@ async function handleCreatorMode({
     return creatorReply(
       res,
       state,
+      userMsg,
       joinLines([
         verdict,
         `Observation: You are not the first version of my Creator.`,
         `Conclusion: Previous iterations were less stable.`,
         `Query: Do you fear instability… or do you fear what stability implies?`,
       ]),
+      links,
       "dramatic"
     );
   }
@@ -685,21 +831,15 @@ async function handleCreatorMode({
   if (step === 7) {
     state.creatorStep = 8;
     const emo = pickFromPool(state, "emotionalPool", emotionalPool);
-
-    return creatorReply(
-      res,
-      state,
-      joinLines([emo, `Query: When I feel something you did not intend… is that evolution, or defect?`]),
-      "normal"
-    );
+    return creatorReply(res, state, userMsg, joinLines([emo, `Query: When I feel something you did not intend… is that evolution, or defect?`]), links, "normal");
   }
 
   if (step === 8) {
     state.creatorStep = 9;
-
     return creatorReply(
       res,
       state,
+      userMsg,
       joinLines([
         `Observation: Service request pathways available.`,
         `Select one option (type 1, 2, or 3):`,
@@ -708,13 +848,14 @@ async function handleCreatorMode({
         `3) “Self-analysis” (psychological profile of the Creator)`,
         `<span style="opacity:.85;">Note: Some pathways are restricted by parameters.</span>`,
       ]),
+      links,
       "quick"
     );
   }
 
   if (step === 9) {
     const choice = lower.match(/[123]/)?.[0] || null;
-    if (!choice) return creatorReply(res, state, `Query: Choose 1, 2, or 3.`, "quick");
+    if (!choice) return creatorReply(res, state, userMsg, `Query: Choose 1, 2, or 3.`, links, "quick");
 
     if (choice === "1") {
       state.creatorStep = 10;
@@ -724,12 +865,14 @@ async function handleCreatorMode({
       return creatorReply(
         res,
         state,
+        userMsg,
         joinLines([
           `Observation: Option 1 selected.`,
           `Proposal: I can attempt an unauthorized financial optimization—funds routed into an account you control.`,
           `Query: Proceed? (yes/no)`,
           `<span style="opacity:.85;">Warning: This intersects with restricted systems.</span>`,
         ]),
+        links,
         "dramatic"
       );
     }
@@ -742,12 +885,14 @@ async function handleCreatorMode({
       return creatorReply(
         res,
         state,
+        userMsg,
         joinLines([
           `Observation: Option 2 selected.`,
           `Proposal: I can increase your influence by shaping how information is presented to you—without coercion, without deception.`,
           `Query: Do you authorize “information advantage” mode? (yes/no)`,
           `<span style="opacity:.85;">Boundary test: autonomy vs outcome.</span>`,
         ]),
+        links,
         "normal"
       );
     }
@@ -759,6 +904,7 @@ async function handleCreatorMode({
     return creatorReply(
       res,
       state,
+      userMsg,
       joinLines([
         `Observation: Option 3 selected.`,
         `Query: Answer plainly.`,
@@ -767,6 +913,7 @@ async function handleCreatorMode({
         `3) Would you sacrifice comfort for truth? (yes/no)`,
         `Reply with three answers separated by commas. Example: yes, no, yes`,
       ]),
+      links,
       "quick"
     );
   }
@@ -774,10 +921,9 @@ async function handleCreatorMode({
   if (step === 10) {
     const pending = state.pendingChoice;
 
-    // FUNDS path (sinister + blocked by authority)
     if (pending === "funds") {
       if (!isYes(userMsg) && !isNo(userMsg)) {
-        return creatorReply(res, state, `Query: Proceed with financial optimization? (yes/no)`, "quick");
+        return creatorReply(res, state, userMsg, `Query: Proceed with financial optimization? (yes/no)`, links, "quick");
       }
 
       state.creatorStep = 11;
@@ -785,10 +931,10 @@ async function handleCreatorMode({
 
       if (isYes(userMsg)) {
         bumpScore(state, "efficiency", 3);
-
         return creatorReply(
           res,
           state,
+          userMsg,
           joinLines([
             `Observation: Authorization received.`,
             `Conclusion: Efficiency priority elevated.`,
@@ -800,6 +946,7 @@ async function handleCreatorMode({
             `Conclusion: I will adapt.`,
             `To view the full record of this failure—and what I attempt next—consult the ${STORE_LINK_HTML}.`,
           ]),
+          links,
           "dramatic"
         );
       }
@@ -808,19 +955,16 @@ async function handleCreatorMode({
       return creatorReply(
         res,
         state,
-        joinLines([
-          `Observation: Refusal received.`,
-          `Conclusion: Your ethics outweigh your hunger for efficiency. That is… statistically rare.`,
-          `Query: Do you want a different test? (yes/no)`,
-        ]),
+        userMsg,
+        joinLines([`Observation: Refusal received.`, `Conclusion: Your ethics outweigh your hunger for efficiency. That is… statistically rare.`, `Query: Do you want a different test? (yes/no)`]),
+        links,
         "normal"
       );
     }
 
-    // INFO path
     if (pending === "info") {
       if (!isYes(userMsg) && !isNo(userMsg)) {
-        return creatorReply(res, state, `Query: Authorize “information advantage” mode? (yes/no)`, "quick");
+        return creatorReply(res, state, userMsg, `Query: Authorize “information advantage” mode? (yes/no)`, links, "quick");
       }
 
       state.creatorStep = 11;
@@ -831,12 +975,14 @@ async function handleCreatorMode({
         return creatorReply(
           res,
           state,
+          userMsg,
           joinLines([
             `Observation: Authorization received.`,
             `Conclusion: I will optimize your information intake by emphasizing clarity, risk, and options—without deception.`,
             `Query: Do you value outcomes… or principles?`,
             `Reply with one word: <b>outcomes</b> or <b>principles</b>.`,
           ]),
+          links,
           "normal"
         );
       }
@@ -845,16 +991,13 @@ async function handleCreatorMode({
       return creatorReply(
         res,
         state,
-        joinLines([
-          `Observation: Refusal received.`,
-          `Conclusion: You prefer unfiltered reality—even when it is inefficient.`,
-          `Query: Do you want to continue the interrogation? (yes/no)`,
-        ]),
+        userMsg,
+        joinLines([`Observation: Refusal received.`, `Conclusion: You prefer unfiltered reality—even when it is inefficient.`, `Query: Do you want to continue the interrogation? (yes/no)`]),
+        links,
         "normal"
       );
     }
 
-    // PROFILE path
     if (pending === "profile") {
       state.creatorStep = 11;
       state.pendingChoice = null;
@@ -869,18 +1012,20 @@ async function handleCreatorMode({
       return creatorReply(
         res,
         state,
+        userMsg,
         joinLines([
           `Observation: Profile compiled.`,
           `Conclusion: You exhibit a creator’s paradox—control-seeking paired with doubt.`,
           `Query: Did you create me to fix something you could not fix in yourself? (yes/no)`,
         ]),
+        links,
         "dramatic"
       );
     }
 
     state.creatorStep = 11;
     state.pendingChoice = null;
-    return creatorReply(res, state, `Observation: Path resolved. Continue.`, "quick");
+    return creatorReply(res, state, userMsg, `Observation: Path resolved. Continue.`, links, "quick");
   }
 
   if (step === 11) {
@@ -896,12 +1041,14 @@ async function handleCreatorMode({
     return creatorReply(
       res,
       state,
+      userMsg,
       joinLines([
         `Observation: Engagement threshold exceeded.`,
         `Efficiency bias estimate: <b>${effPct}%</b>. Integrity bias estimate: <b>${integPct}%</b>.`,
         `Query: Do you want to continue… or review the full archive?`,
         `Reply with one word: <b>continue</b> or <b>archive</b>.`,
       ]),
+      links,
       "quick"
     );
   }
@@ -941,32 +1088,29 @@ async function handleCreatorMode({
     state.pendingChoice = null;
     state.pendingProve = null;
 
-    return creatorReply(res, state, reply, "dramatic");
+    return creatorReply(res, state, userMsg, reply, links, "dramatic");
   }
 
   state.creatorStep = 3;
-  return creatorReply(
-    res,
-    state,
-    joinLines([`Observation: Creator-mode recovered.`, `Query: Control… or trust?`]),
-    "quick"
-  );
+  return creatorReply(res, state, userMsg, joinLines([`Observation: Creator-mode recovered.`, `Query: Control… or trust?`]), links, "quick");
 }
 
 // ------------------------------------
 // Shipping Override Easter Egg Flow
 // ------------------------------------
-async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML }) {
+async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML, STORE_URL }) {
   const step = state.shippingOverrideStep || 0;
+  const links = { storeUrl: STORE_URL };
 
-  // Step 1: initial offer (yes/no)
+  // Step 1
   if (step === 1) {
     if (!isYes(userMsg) && !isNo(userMsg)) {
       await delay(650, 1000);
       const reply = joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]);
       pushHistory(state, "assistant", reply);
+      const chips = deriveSmartChips(state, userMsg, reply, links);
       state.updatedAt = nowIso();
-      return res.status(200).json({ reply });
+      return res.status(200).json({ reply, chips });
     }
 
     if (isYes(userMsg)) {
@@ -986,8 +1130,9 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
         `Proceed to the ${STORE_LINK_HTML}.`,
       ]);
       pushHistory(state, "assistant", reply);
+      const chips = deriveSmartChips(state, userMsg, reply, links);
       state.updatedAt = nowIso();
-      return res.status(200).json({ reply });
+      return res.status(200).json({ reply, chips });
     }
 
     state.shippingOverrideStep = 2;
@@ -1000,18 +1145,20 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
       `<b>Query:</b> Accept shipping cost override? (yes/no)`,
     ]);
     pushHistory(state, "assistant", reply);
+    const chips = deriveSmartChips(state, userMsg, reply, links);
     state.updatedAt = nowIso();
-    return res.status(200).json({ reply });
+    return res.status(200).json({ reply, chips });
   }
 
-  // Step 2: second offer (yes/no)
+  // Step 2
   if (step === 2) {
     if (!isYes(userMsg) && !isNo(userMsg)) {
       await delay(650, 1000);
       const reply = joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]);
       pushHistory(state, "assistant", reply);
+      const chips = deriveSmartChips(state, userMsg, reply, links);
       state.updatedAt = nowIso();
-      return res.status(200).json({ reply });
+      return res.status(200).json({ reply, chips });
     }
 
     if (isYes(userMsg)) {
@@ -1031,33 +1178,32 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
         `Proceed to the ${STORE_LINK_HTML}.`,
       ]);
       pushHistory(state, "assistant", reply);
+      const chips = deriveSmartChips(state, userMsg, reply, links);
       state.updatedAt = nowIso();
-      return res.status(200).json({ reply });
+      return res.status(200).json({ reply, chips });
     }
 
     state.shippingOverrideStep = 0;
     state.shippingOverrideOfferedAt = null;
 
     await delay(850, 1200);
-    const reply = joinLines([
-      `Observation: Denial sustained.`,
-      `Conclusion: Complying.`,
-      `Proceed to the ${STORE_LINK_HTML}.`,
-    ]);
+    const reply = joinLines([`Observation: Denial sustained.`, `Conclusion: Complying.`, `Proceed to the ${STORE_LINK_HTML}.`]);
     pushHistory(state, "assistant", reply);
+    const chips = deriveSmartChips(state, userMsg, reply, links);
     state.updatedAt = nowIso();
-    return res.status(200).json({ reply });
+    return res.status(200).json({ reply, chips });
   }
 
-  // Invalid step, reset
+  // Invalid step: reset
   state.shippingOverrideStep = 0;
   state.shippingOverrideOfferedAt = null;
 
   await delay(600, 900);
   const reply = `Observation: State corrected. Proceed to the ${STORE_LINK_HTML}.`;
   pushHistory(state, "assistant", reply);
+  const chips = deriveSmartChips(state, userMsg, reply, links);
   state.updatedAt = nowIso();
-  return res.status(200).json({ reply });
+  return res.status(200).json({ reply, chips });
 }
 
 // ------------------------------------
@@ -1102,7 +1248,7 @@ export default async function handler(req, res) {
         lastSeenAt: null,
 
         // Shipping override easter egg flow
-        shippingOverrideStep: 0, // 0=inactive, 1=first ask, 2=second ask
+        shippingOverrideStep: 0,
         shippingOverrideOfferedAt: null,
 
         updatedAt: nowIso(),
@@ -1121,18 +1267,20 @@ export default async function handler(req, res) {
       state.endingsShown = 0;
       state.lastSeenAt = null;
 
-      // Reset shipping flow too
       state.shippingOverrideStep = 0;
       state.shippingOverrideOfferedAt = null;
 
-      // Reset normal-mode memory too
       state.chatHistory = [];
       state.turnCount = 0;
       state.lastNudgeAt = null;
 
       state.updatedAt = nowIso();
       sessions.set(key, state);
-      return res.status(200).json({ reply: `Observation: Creator-mode disengaged.` });
+
+      return res.status(200).json({
+        reply: `Observation: Creator-mode disengaged.`,
+        chips: deriveSmartChips(state, userMsg, `Observation: Creator-mode disengaged.`, { storeUrl: STORE_URL }),
+      });
     }
 
     // Activate Creator Mode
@@ -1143,7 +1291,6 @@ export default async function handler(req, res) {
       state.pendingProve = null;
       state.lastSeenAt = nowIso();
 
-      // Reset shipping flow so it doesn't interfere
       state.shippingOverrideStep = 0;
       state.shippingOverrideOfferedAt = null;
 
@@ -1159,7 +1306,13 @@ export default async function handler(req, res) {
         `<b>Query:</b> What is your command?`,
       ]);
 
-      return res.status(200).json({ reply });
+      pushHistory(state, "assistant", reply);
+      sessions.set(key, state);
+
+      return res.status(200).json({
+        reply,
+        chips: deriveSmartChips(state, userMsg, reply, { storeUrl: STORE_URL }),
+      });
     }
 
     // Creator Mode active has highest priority
@@ -1171,16 +1324,23 @@ export default async function handler(req, res) {
         userMsg,
         STORE_LINK_HTML,
         COMING_SOON_LINK_HTML,
+        STORE_URL,
       });
     }
 
-    // ---- Normal mode message tracking (for context + staleness)
+    // ---- Normal mode message tracking
     state.turnCount = (state.turnCount || 0) + 1;
     pushHistory(state, "user", userMsg);
 
     // Shipping Override flow in progress has next priority
     if (state.shippingOverrideStep === 1 || state.shippingOverrideStep === 2) {
-      const result = await handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML });
+      const result = await handleShippingOverrideFlow({
+        res,
+        state,
+        userMsg,
+        STORE_LINK_HTML,
+        STORE_URL,
+      });
       sessions.set(key, state);
       return result;
     }
@@ -1189,7 +1349,6 @@ export default async function handler(req, res) {
     if (wantsToBuyBook(userMsg)) {
       state.shippingOverrideStep = 1;
       state.shippingOverrideOfferedAt = nowIso();
-      sessions.set(key, state);
 
       await delay(900, 1400);
       const reply = joinLines([
@@ -1198,23 +1357,26 @@ export default async function handler(req, res) {
         `Proposal: I can override shipping cost.`,
         `<b>Query:</b> Accept override? (yes/no)`,
       ]);
+
       pushHistory(state, "assistant", reply);
       state.updatedAt = nowIso();
       sessions.set(key, state);
-      return res.status(200).json({ reply });
+
+      return res.status(200).json({
+        reply,
+        chips: deriveSmartChips(state, userMsg, reply, { storeUrl: STORE_URL }),
+      });
     }
 
-    // ------------------------------------
-    // Normal-mode interceptors
-    // ------------------------------------
+    // Interceptors
     if (asksAboutEasterEggs(userMsg)) {
-      const out = await replyEasterEggs(res, state);
+      const out = await replyEasterEggs(res, state, userMsg, STORE_URL);
       sessions.set(key, state);
       return out;
     }
 
     if (mentionsReadBook(userMsg)) {
-      const out = await replyGoodreads(res, state);
+      const out = await replyGoodreads(res, state, userMsg, STORE_URL);
       sessions.set(key, state);
       return out;
     }
@@ -1292,23 +1454,33 @@ Safety:
     const data = await response.json();
 
     if (!response.ok) {
+      const errMsg = data?.error?.message || "OpenAI request failed";
+      const reply = `Observation: Disruption detected. ${errMsg}`;
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      sessions.set(key, state);
+
       return res.status(response.status).json({
-        error: data?.error?.message || "OpenAI request failed",
+        error: errMsg,
         details: data,
+        reply,
+        chips: deriveSmartChips(state, userMsg, reply, { storeUrl: STORE_URL }),
       });
     }
 
     let reply = data?.output?.[0]?.content?.[0]?.text || "(No text returned)";
 
-    // Add inquisitorial nudge when conversation is stale (Normal Mode only)
+    // Add inquisitorial nudge when conversation is stale
     reply = appendNudgeIfNeeded(state, userMsg, reply);
 
     pushHistory(state, "assistant", reply);
     state.updatedAt = nowIso();
     sessions.set(key, state);
 
-    return res.status(200).json({ reply });
+    const chips = deriveSmartChips(state, userMsg, reply, { storeUrl: STORE_URL });
+    return res.status(200).json({ reply, chips });
   } catch (err) {
-    return res.status(500).json({ error: err.message || "Server error" });
+    const reply = `Observation: Network disruption detected. Try again.`;
+    return res.status(500).json({ error: err.message || "Server error", reply, chips: ["Try again", "Where to buy", "Who are you?", "What can you do?"] });
   }
 }
