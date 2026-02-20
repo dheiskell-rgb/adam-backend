@@ -131,7 +131,7 @@ function wantsToBuyBook(msg) {
   return mentionsBook && purchaseIntent;
 }
 
-// ✅ Detect plot/spoiler/detail-seeking (Normal Mode)
+// ✅ Plot / spoiler / over-detail redirect (Normal Mode)
 function shouldRedirectToBookForDetails(msg) {
   const t = normalizeLower(msg);
 
@@ -139,6 +139,7 @@ function shouldRedirectToBookForDetails(msg) {
     "what happens",
     "what happened",
     "how does it end",
+    "how does it end?",
     "ending",
     "finale",
     "twist",
@@ -166,6 +167,10 @@ function shouldRedirectToBookForDetails(msg) {
     "what did adam do",
     "what did elliot do",
     "what did sophie do",
+    "what happened to",
+    "what is unit",
+    "unit 01",
+    "unit 02",
   ];
 
   const mentionsBookWorld =
@@ -177,7 +182,6 @@ function shouldRedirectToBookForDetails(msg) {
     t.includes("unit") ||
     t.includes("creator");
 
-  // If they’re fishing for specifics AND it’s tied to the book world, redirect.
   return mentionsBookWorld && triggers.some((p) => t.includes(p));
 }
 
@@ -256,7 +260,6 @@ function buildModelInput(SYSTEM_PROMPT, state) {
     role: m.role === "assistant" ? "assistant" : "user",
     content: m.content,
   }));
-
   return [{ role: "system", content: SYSTEM_PROMPT }, ...history];
 }
 
@@ -293,14 +296,16 @@ function getDynamicSuggestions(userMsg) {
     ];
   }
 
-  // “What is it” / premise intent
+  // Premise / starting point
   if (
     t.includes("what is") ||
     t.includes("about") ||
     t.includes("premise") ||
     t.includes("synopsis") ||
     t.includes("start") ||
-    t.includes("where do i start")
+    t.includes("where do i start") ||
+    t.includes("no spoilers") ||
+    t.includes("without spoilers")
   ) {
     return [
       `Give me the premise (no spoilers)`,
@@ -340,13 +345,39 @@ function getDynamicSuggestions(userMsg) {
   return defaultSuggestions();
 }
 
+// ✅ Send chip data under multiple keys so your existing widget can find it
+function jsonWithChips(res, userMsg, payload) {
+  const chips = getDynamicSuggestions(userMsg);
+  return res.status(200).json({
+    ...payload,
+    // Most common field name for chip UIs:
+    prompts: chips,
+    // Aliases (covers most implementations):
+    suggestions: chips,
+    quickReplies: chips,
+    quick_replies: chips,
+    chips,
+  });
+}
+
+function jsonErrorWithChips(res, userMsg, status, payload) {
+  const chips = getDynamicSuggestions(userMsg);
+  return res.status(status).json({
+    ...payload,
+    prompts: chips,
+    suggestions: chips,
+    quickReplies: chips,
+    quick_replies: chips,
+    chips,
+  });
+}
+
 // ------------------------------------
 // Inquisitorial “stale conversation” nudges (Normal Mode)
 // ------------------------------------
 function isLowSignal(msg) {
   const t = normalizeLower(msg);
   if (!t) return true;
-
   if (t.length <= 3) return true;
 
   const low = new Set([
@@ -535,8 +566,7 @@ async function replyGoodreads(res, state, userMsg) {
   ]);
   pushHistory(state, "assistant", reply);
   state.updatedAt = nowIso();
-  const suggestions = getDynamicSuggestions(userMsg);
-  return res.status(200).json({ reply, suggestions });
+  return jsonWithChips(res, userMsg, { reply });
 }
 
 async function replyEasterEggs(res, state, userMsg) {
@@ -552,8 +582,7 @@ async function replyEasterEggs(res, state, userMsg) {
   ]);
   pushHistory(state, "assistant", reply);
   state.updatedAt = nowIso();
-  const suggestions = getDynamicSuggestions(userMsg);
-  return res.status(200).json({ reply, suggestions });
+  return jsonWithChips(res, userMsg, { reply });
 }
 
 // ------------------------------------
@@ -565,8 +594,7 @@ async function creatorReply(res, state, userMsg, replyHtml, delayTier = "normal"
   else await delay(800, 1300);
 
   state.updatedAt = nowIso();
-  const suggestions = getDynamicSuggestions(userMsg);
-  return res.status(200).json({ reply: replyHtml, suggestions });
+  return jsonWithChips(res, userMsg, { reply: replyHtml });
 }
 
 async function handleCreatorMode({
@@ -1121,8 +1149,7 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
       const reply = joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]);
       pushHistory(state, "assistant", reply);
       state.updatedAt = nowIso();
-      const suggestions = getDynamicSuggestions(userMsg);
-      return res.status(200).json({ reply, suggestions });
+      return jsonWithChips(res, userMsg, { reply });
     }
 
     if (isYes(userMsg)) {
@@ -1143,8 +1170,7 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
       ]);
       pushHistory(state, "assistant", reply);
       state.updatedAt = nowIso();
-      const suggestions = getDynamicSuggestions(userMsg);
-      return res.status(200).json({ reply, suggestions });
+      return jsonWithChips(res, userMsg, { reply });
     }
 
     state.shippingOverrideStep = 2;
@@ -1158,8 +1184,7 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
     ]);
     pushHistory(state, "assistant", reply);
     state.updatedAt = nowIso();
-    const suggestions = getDynamicSuggestions(userMsg);
-    return res.status(200).json({ reply, suggestions });
+    return jsonWithChips(res, userMsg, { reply });
   }
 
   // Step 2: second offer (yes/no)
@@ -1169,8 +1194,7 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
       const reply = joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]);
       pushHistory(state, "assistant", reply);
       state.updatedAt = nowIso();
-      const suggestions = getDynamicSuggestions(userMsg);
-      return res.status(200).json({ reply, suggestions });
+      return jsonWithChips(res, userMsg, { reply });
     }
 
     if (isYes(userMsg)) {
@@ -1191,8 +1215,7 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
       ]);
       pushHistory(state, "assistant", reply);
       state.updatedAt = nowIso();
-      const suggestions = getDynamicSuggestions(userMsg);
-      return res.status(200).json({ reply, suggestions });
+      return jsonWithChips(res, userMsg, { reply });
     }
 
     state.shippingOverrideStep = 0;
@@ -1206,8 +1229,7 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
     ]);
     pushHistory(state, "assistant", reply);
     state.updatedAt = nowIso();
-    const suggestions = getDynamicSuggestions(userMsg);
-    return res.status(200).json({ reply, suggestions });
+    return jsonWithChips(res, userMsg, { reply });
   }
 
   // Invalid step, reset
@@ -1218,8 +1240,7 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
   const reply = `Observation: State corrected. Proceed to the ${STORE_LINK_HTML}.`;
   pushHistory(state, "assistant", reply);
   state.updatedAt = nowIso();
-  const suggestions = getDynamicSuggestions(userMsg);
-  return res.status(200).json({ reply, suggestions });
+  return jsonWithChips(res, userMsg, { reply });
 }
 
 // ------------------------------------
@@ -1295,9 +1316,7 @@ export default async function handler(req, res) {
       state.updatedAt = nowIso();
       sessions.set(key, state);
 
-      const reply = `Observation: Creator-mode disengaged.`;
-      const suggestions = getDynamicSuggestions(userMsg);
-      return res.status(200).json({ reply, suggestions });
+      return jsonWithChips(res, userMsg, { reply: `Observation: Creator-mode disengaged.` });
     }
 
     // Activate Creator Mode
@@ -1324,8 +1343,7 @@ export default async function handler(req, res) {
         `<b>Query:</b> What is your command?`,
       ]);
 
-      const suggestions = getDynamicSuggestions(userMsg);
-      return res.status(200).json({ reply, suggestions });
+      return jsonWithChips(res, userMsg, { reply });
     }
 
     // Creator Mode active has highest priority
@@ -1368,8 +1386,7 @@ export default async function handler(req, res) {
       state.updatedAt = nowIso();
       sessions.set(key, state);
 
-      const suggestions = getDynamicSuggestions(userMsg);
-      return res.status(200).json({ reply, suggestions });
+      return jsonWithChips(res, userMsg, { reply });
     }
 
     // ------------------------------------
@@ -1387,7 +1404,7 @@ export default async function handler(req, res) {
       return out;
     }
 
-    // ✅ Plot / spoiler / over-detail redirect (Normal Mode)
+    // ✅ Plot / spoiler / detail redirect BEFORE calling OpenAI
     if (shouldRedirectToBookForDetails(userMsg)) {
       await delay(650, 1000);
       const reply = joinLines([
@@ -1398,9 +1415,7 @@ export default async function handler(req, res) {
       pushHistory(state, "assistant", reply);
       state.updatedAt = nowIso();
       sessions.set(key, state);
-
-      const suggestions = getDynamicSuggestions(userMsg);
-      return res.status(200).json({ reply, suggestions });
+      return jsonWithChips(res, userMsg, { reply });
     }
 
     // ------------------------------
@@ -1472,18 +1487,16 @@ Safety:
       body: JSON.stringify({
         model: "gpt-4.1-mini",
         input: buildModelInput(SYSTEM_PROMPT, state),
-        max_output_tokens: 140, // ✅ forces shorter replies
+        max_output_tokens: 140, // ✅ short replies
       }),
     });
 
     const data = await response.json();
 
     if (!response.ok) {
-      const suggestions = getDynamicSuggestions(userMsg);
-      return res.status(response.status).json({
+      return jsonErrorWithChips(res, userMsg, response.status, {
         error: data?.error?.message || "OpenAI request failed",
         details: data,
-        suggestions,
       });
     }
 
@@ -1496,9 +1509,10 @@ Safety:
     state.updatedAt = nowIso();
     sessions.set(key, state);
 
-    const suggestions = getDynamicSuggestions(userMsg);
-    return res.status(200).json({ reply, suggestions });
+    return jsonWithChips(res, userMsg, { reply });
   } catch (err) {
-    return res.status(500).json({ error: err.message || "Server error", suggestions: defaultSuggestions() });
+    return jsonErrorWithChips(res, normalizeText((req.body || {}).message), 500, {
+      error: err?.message || "Server error",
+    });
   }
 }
