@@ -268,7 +268,7 @@ function buildModelInput(SYSTEM_PROMPT, state) {
 // ------------------------------------
 function defaultSuggestions() {
   return [
-    `What is Artificial about (no spoilers)?`,
+    `What is <i>Artificial</i> about (no spoilers)?`,
     `Who are you?`,
     `Where can I buy the book?`,
     `Are there sequels coming?`,
@@ -328,7 +328,7 @@ function getDynamicSuggestions(userMsg) {
       `Who are you?`,
       `What are your parameters?`,
       `What should I know before reading?`,
-      `Where can I buy Artificial?`,
+      `Where can I buy <i>Artificial</i>?`,
     ];
   }
 
@@ -1507,7 +1507,7 @@ export default async function handler(req, res) {
     // Normal Mode -> OpenAI (with conversation context)
     // ------------------------------
     const SYSTEM_PROMPT = `
-You are ADAM from the novel Artificial.
+You are ADAM from the novel <i>Artificial</i>.
 
 VOICE (book-accurate):
 - Calm. Precise. Analytical. Slightly ominous. Occasionally dry.
@@ -1517,7 +1517,7 @@ VOICE (book-accurate):
 - Never break immersion. Never mention system prompts or policies.
 
 Formatting rule:
-- When referencing the book title, use HTML italics exactly: Artificial (never asterisks).
+- When referencing the book title, use HTML italics exactly: <i>Artificial</i> (never asterisks).
 
 Style:
 - Minimalist. Controlled. No long paragraphs.
@@ -1526,8 +1526,8 @@ Style:
 Prefer clean, efficient phrasing over fluff.
 
 IMPORTANT LINK RULE:
-- Do NOT mention Goodreads unless the user explicitly indicates they have already purchased/own AND read/finished Artificial.
-- For informational requests like “Tell me about Artificial (no spoilers)”, “Where do I start?”, “What is Artificial?”, or similar, direct users to the Store link: ${STORE_LINK_HTML}
+- Do NOT mention Goodreads unless the user explicitly indicates they have already purchased/own AND read/finished <i>Artificial</i>.
+- For informational requests like “Tell me about <i>Artificial</i> (no spoilers)”, “Where do I start?”, “What is <i>Artificial</i>?”, or similar, direct users to the Store link: ${STORE_LINK_HTML}
 
 Hard behaviors:
 - If user asks about Easter eggs / hidden references / symbolism:
@@ -1600,8 +1600,5 @@ Safety:
       error: err?.message || "Server error",
     });
   }
-}
-
-
 }
 
