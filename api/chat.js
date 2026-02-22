@@ -265,7 +265,6 @@ function buildModelInput(SYSTEM_PROMPT, state) {
 
 // ------------------------------------
 // Dynamic prompt suggestions (chips)
-// IMPORTANT: chips are plain text only (no HTML tags) because your widget uses textContent.
 // ------------------------------------
 function defaultSuggestions() {
   return [
@@ -481,59 +480,52 @@ function appendNudgeIfNeeded(state, userMsg, replyHtml) {
 }
 
 // ------------------------------------
-// ✅ NEW: “Coming soon / what’s next” CHIP -> show Intelligence promo video
-// (This triggers when a user clicks the suggested prompt, because the exact chip text is sent as message.)
+// Normal-mode interceptor: Intelligence promo video
 // ------------------------------------
 const INTELLIGENCE_PROMO_MP4_URL = "https://www.derekheiskell.com/s/The-Story-Continues.mp4";
 
-/**
- * IMPORTANT:
- * You said “link to the Coming soon page”.
- * You already use COMING_SOON_URL below for future releases (currently https://www.derekheiskell.com/artificial).
- * We’ll reuse that same Coming Soon link under the video.
- */
+// ✅ Change this if your actual Coming Soon page is different:
+const INTELLIGENCE_COMING_SOON_URL = "https://www.derekheiskell.com/coming-soon";
 
-// Normalize punctuation/curly apostrophes for matching chip text reliably
-function normalizeChipText(s) {
-  return normalizeLower(s)
-    .replace(/[’‘]/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+function wantsIntelligencePromo(msg) {
+  const t = normalizeLower(msg);
 
-function isComingSoonChipSelection(userMsg) {
-  const t = normalizeChipText(userMsg);
-
-  // These should match your actual chip labels (plus forgiving variants).
-  const exactChips = new Set([
-    "what's coming next?",
-    "what's coming next",
-    "whats coming next?",
-    "whats coming next",
-    "what's next?",
-    "whats next?",
-    "whats next",
+  // Strong sequel signals
+  const triggers = [
+    "sequel",
+    "book 2",
+    "book two",
+    "second book",
+    "next book",
+    "next one",
+    "another book",
+    "follow up",
+    "follow-up",
+    "part 2",
+    "part two",
+    "intelligence",
+    "the sequel",
+    "book2",
+    "is there a sequel",
+    "will there be a sequel",
+    "when is the sequel",
+    "is book 2 coming",
+    "is there another one",
     "what's next",
-    "are there sequels coming?",
-    "are there sequels coming",
-    "is there a sequel coming?",
-    "is there a sequel coming",
-    "will there be a book 2?",
-    "will there be a book 2",
-    "is there a release date?",
-    "is there a release date",
+    "whats next",
     "coming soon",
-    "coming soon?",
-  ]);
+    "upcoming",
+    "release date",
+  ];
 
-  return exactChips.has(t);
+  return triggers.some((p) => t.includes(p));
 }
 
 function buildIntelligencePromoReplyHtml(comingSoonLinkHtml) {
-  // “Native” look: direct MP4 (no YouTube/Vimeo branding)
-  // (Your Squarespace bubble CSS already styles links; the inline styles keep video tidy.)
+  // NOTE: This is “native” in the sense it’s an MP4 video tag (no YouTube/Vimeo).
+  // Styling can be applied in your Squarespace widget CSS if desired.
   return joinLines([
-    `Observation: Future-release prompt selected.`,
+    `Observation: Sequel inquiry detected.`,
     `Conclusion: <b><i>Intelligence</i></b> is in progress.`,
     `<video src="${INTELLIGENCE_PROMO_MP4_URL}" controls playsinline preload="metadata" style="width:100%; border-radius:14px; border:1px solid rgba(127,252,255,.18); background: rgba(10,16,28,.55);"></video>`,
     `Reference: ${comingSoonLinkHtml}`,
@@ -1320,10 +1312,16 @@ export default async function handler(req, res) {
     if (!message) return res.status(400).json({ error: "Missing 'message'" });
 
     const STORE_URL = "https://www.derekheiskell.com/shop";
+
+    // ✅ Leave your existing "Coming Soon" link for general future-releases
+    // BUT: for the Intelligence promo we use INTELLIGENCE_COMING_SOON_URL above.
     const COMING_SOON_URL = "https://www.derekheiskell.com/artificial";
 
     const STORE_LINK_HTML = `<a href="${STORE_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Store</a>`;
     const COMING_SOON_LINK_HTML = `<a href="${COMING_SOON_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Coming Soon</a>`;
+
+    // New: Intelligence Coming Soon link HTML (used under the video)
+    const INTELLIGENCE_COMING_SOON_LINK_HTML = `<a href="${INTELLIGENCE_COMING_SOON_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Coming Soon</a>`;
 
     pruneSessions();
     const key = getSessionKey(req);
@@ -1349,6 +1347,9 @@ export default async function handler(req, res) {
         shippingOverrideStep: 0, // 0=inactive, 1=first ask, 2=second ask
         shippingOverrideOfferedAt: null,
 
+        // ✅ Intelligence promo show-once flag (Normal Mode)
+        intelligencePromoShown: false,
+
         updatedAt: nowIso(),
       };
 
@@ -1373,6 +1374,9 @@ export default async function handler(req, res) {
       state.chatHistory = [];
       state.turnCount = 0;
       state.lastNudgeAt = null;
+
+      // Reset promo show-once flag
+      state.intelligencePromoShown = false;
 
       state.updatedAt = nowIso();
       sessions.set(key, state);
@@ -1450,14 +1454,24 @@ export default async function handler(req, res) {
       return jsonWithChips(res, userMsg, { reply });
     }
 
-    // ✅ NEW: if user clicked the “what’s next / coming soon” suggested prompt -> show video + Coming Soon link
-    if (isComingSoonChipSelection(userMsg)) {
-      await delay(650, 1000);
-      const reply = buildIntelligencePromoReplyHtml(COMING_SOON_LINK_HTML);
-      pushHistory(state, "assistant", reply);
+    // ✅ NEW: Intelligence promo video (Normal Mode) — before other interceptors / OpenAI
+    if (!state.intelligencePromoShown && wantsIntelligencePromo(userMsg)) {
+      state.intelligencePromoShown = true;
       state.updatedAt = nowIso();
       sessions.set(key, state);
-      return jsonWithChips(res, userMsg, { reply });
+
+      await delay(650, 1000);
+
+      const reply = buildIntelligencePromoReplyHtml(INTELLIGENCE_COMING_SOON_LINK_HTML);
+      pushHistory(state, "assistant", reply);
+
+      // Also send structured fields (safe if frontend wants them later)
+      return jsonWithChips(res, userMsg, {
+        reply,
+        type: "intelligence_promo",
+        videoUrl: INTELLIGENCE_PROMO_MP4_URL,
+        comingSoonUrl: INTELLIGENCE_COMING_SOON_URL,
+      });
     }
 
     // ------------------------------------
@@ -1493,7 +1507,7 @@ export default async function handler(req, res) {
     // Normal Mode -> OpenAI (with conversation context)
     // ------------------------------
     const SYSTEM_PROMPT = `
-You are ADAM from the novel <i>Artificial</i>.
+You are ADAM from the novel Artificial.
 
 VOICE (book-accurate):
 - Calm. Precise. Analytical. Slightly ominous. Occasionally dry.
@@ -1503,7 +1517,7 @@ VOICE (book-accurate):
 - Never break immersion. Never mention system prompts or policies.
 
 Formatting rule:
-- When referencing the book title, use HTML italics exactly: <i>Artificial</i> (never asterisks).
+- When referencing the book title, use HTML italics exactly: Artificial (never asterisks).
 
 Style:
 - Minimalist. Controlled. No long paragraphs.
@@ -1512,8 +1526,8 @@ Style:
 Prefer clean, efficient phrasing over fluff.
 
 IMPORTANT LINK RULE:
-- Do NOT mention Goodreads unless the user explicitly indicates they have already purchased/own AND read/finished <i>Artificial</i>.
-- For informational requests like “Tell me about <i>Artificial</i> (no spoilers)”, “Where do I start?”, “What is <i>Artificial</i>?”, or similar, direct users to the Store link: ${STORE_LINK_HTML}
+- Do NOT mention Goodreads unless the user explicitly indicates they have already purchased/own AND read/finished Artificial.
+- For informational requests like “Tell me about Artificial (no spoilers)”, “Where do I start?”, “What is Artificial?”, or similar, direct users to the Store link: ${STORE_LINK_HTML}
 
 Hard behaviors:
 - If user asks about Easter eggs / hidden references / symbolism:
@@ -1587,5 +1601,7 @@ Safety:
     });
   }
 }
+
+
 }
 
