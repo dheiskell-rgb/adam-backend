@@ -480,6 +480,59 @@ function appendNudgeIfNeeded(state, userMsg, replyHtml) {
 }
 
 // ------------------------------------
+// Normal-mode interceptor: Intelligence promo video
+// ------------------------------------
+const INTELLIGENCE_PROMO_MP4_URL = "https://www.derekheiskell.com/s/The-Story-Continues.mp4";
+
+// ✅ Change this if your actual Coming Soon page is different:
+const INTELLIGENCE_COMING_SOON_URL = "https://www.derekheiskell.com/coming-soon";
+
+function wantsIntelligencePromo(msg) {
+  const t = normalizeLower(msg);
+
+  // Strong sequel signals
+  const triggers = [
+    "sequel",
+    "book 2",
+    "book two",
+    "second book",
+    "next book",
+    "next one",
+    "another book",
+    "follow up",
+    "follow-up",
+    "part 2",
+    "part two",
+    "intelligence",
+    "the sequel",
+    "book2",
+    "is there a sequel",
+    "will there be a sequel",
+    "when is the sequel",
+    "is book 2 coming",
+    "is there another one",
+    "what's next",
+    "whats next",
+    "coming soon",
+    "upcoming",
+    "release date",
+  ];
+
+  return triggers.some((p) => t.includes(p));
+}
+
+function buildIntelligencePromoReplyHtml(comingSoonLinkHtml) {
+  // NOTE: This is “native” in the sense it’s an MP4 video tag (no YouTube/Vimeo).
+  // Styling can be applied in your Squarespace widget CSS if desired.
+  return joinLines([
+    `Observation: Sequel inquiry detected.`,
+    `Conclusion: <b><i>Intelligence</i></b> is in progress.`,
+    `<video src="${INTELLIGENCE_PROMO_MP4_URL}" controls playsinline preload="metadata" style="width:100%; border-radius:14px; border:1px solid rgba(127,252,255,.18); background: rgba(10,16,28,.55);"></video>`,
+    `Reference: ${comingSoonLinkHtml}`,
+  ]);
+}
+
+// ------------------------------------
 // Normal-mode interceptors (Goodreads + Easter Eggs)
 // ------------------------------------
 const GOODREADS_URL =
@@ -1259,10 +1312,16 @@ export default async function handler(req, res) {
     if (!message) return res.status(400).json({ error: "Missing 'message'" });
 
     const STORE_URL = "https://www.derekheiskell.com/shop";
+
+    // ✅ Leave your existing "Coming Soon" link for general future-releases
+    // BUT: for the Intelligence promo we use INTELLIGENCE_COMING_SOON_URL above.
     const COMING_SOON_URL = "https://www.derekheiskell.com/artificial";
 
     const STORE_LINK_HTML = `<a href="${STORE_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Store</a>`;
     const COMING_SOON_LINK_HTML = `<a href="${COMING_SOON_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Coming Soon</a>`;
+
+    // New: Intelligence Coming Soon link HTML (used under the video)
+    const INTELLIGENCE_COMING_SOON_LINK_HTML = `<a href="${INTELLIGENCE_COMING_SOON_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Coming Soon</a>`;
 
     pruneSessions();
     const key = getSessionKey(req);
@@ -1288,6 +1347,9 @@ export default async function handler(req, res) {
         shippingOverrideStep: 0, // 0=inactive, 1=first ask, 2=second ask
         shippingOverrideOfferedAt: null,
 
+        // ✅ Intelligence promo show-once flag (Normal Mode)
+        intelligencePromoShown: false,
+
         updatedAt: nowIso(),
       };
 
@@ -1312,6 +1374,9 @@ export default async function handler(req, res) {
       state.chatHistory = [];
       state.turnCount = 0;
       state.lastNudgeAt = null;
+
+      // Reset promo show-once flag
+      state.intelligencePromoShown = false;
 
       state.updatedAt = nowIso();
       sessions.set(key, state);
@@ -1387,6 +1452,26 @@ export default async function handler(req, res) {
       sessions.set(key, state);
 
       return jsonWithChips(res, userMsg, { reply });
+    }
+
+    // ✅ NEW: Intelligence promo video (Normal Mode) — before other interceptors / OpenAI
+    if (!state.intelligencePromoShown && wantsIntelligencePromo(userMsg)) {
+      state.intelligencePromoShown = true;
+      state.updatedAt = nowIso();
+      sessions.set(key, state);
+
+      await delay(650, 1000);
+
+      const reply = buildIntelligencePromoReplyHtml(INTELLIGENCE_COMING_SOON_LINK_HTML);
+      pushHistory(state, "assistant", reply);
+
+      // Also send structured fields (safe if frontend wants them later)
+      return jsonWithChips(res, userMsg, {
+        reply,
+        type: "intelligence_promo",
+        videoUrl: INTELLIGENCE_PROMO_MP4_URL,
+        comingSoonUrl: INTELLIGENCE_COMING_SOON_URL,
+      });
     }
 
     // ------------------------------------
