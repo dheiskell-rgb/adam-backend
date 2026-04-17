@@ -422,13 +422,29 @@ function getSingleLineHiddenSenderResponse(msg) {
   return null;
 }
 
+function asksWhoIsGrahamKade(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t.includes("who is graham kade") ||
+    t.includes("who's graham kade") ||
+    t.includes("whos graham kade") ||
+    t.includes("who is graham") ||
+    t.includes("who's graham") ||
+    t.includes("whos graham")
+  );
+}
+
 async function replyHiddenSenderPrompt(res, state, userMsg) {
   state.hiddenSenderTracePending = true;
   state.updatedAt = nowIso();
 
-  await delay(900, 1300);
+  await delay(1000, 1400);
 
   const reply = joinLines([
+    `Observation: Encoded transmission detected.`,
+    `Action: Analyzing cipher structure...`,
+    `Action: Decoding message payload...`,
+    `Conclusion: Message reconstructed.`,
     `OPEN YOUR EYES`,
     `NOTHING IS AS IT SEEMS.`,
     `Query: Would you like me to identify the sender?`,
@@ -443,15 +459,17 @@ async function replyHiddenSenderPrompt(res, state, userMsg) {
 
 async function replyHiddenSenderFound(res, state, userMsg) {
   state.hiddenSenderTracePending = false;
+  state.hiddenSenderRevealed = true;
   state.updatedAt = nowIso();
 
-  await delay(900, 1300);
+  await delay(1100, 1500);
 
   const reply = joinLines([
-    `Tracing signal origin...`,
-    `Decrypting transmission...`,
-    `Cross-referencing sender signature...`,
-    `Sender identified: Graham Kade`,
+    `Observation: Sender trace authorized.`,
+    `Action: Isolating transmission signature...`,
+    `Action: Comparing source fragments...`,
+    `Action: Resolving identity...`,
+    `Conclusion: Sender identified: Graham Kade.`,
   ]);
 
   pushHistory(state, "assistant", reply);
@@ -473,6 +491,24 @@ async function replyHiddenSenderDeclined(res, state, userMsg) {
   return jsonWithChips(res, userMsg, {
     reply,
     type: "hidden_sender_abort",
+  });
+}
+
+async function replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML) {
+  await delay(800, 1200);
+
+  const reply = joinLines([
+    `Observation: Identity inquiry detected.`,
+    `Conclusion: Full context is not available in this channel.`,
+    `Reference: <b><i>Intelligence</i></b> — Book 2 in the Artificial series.`,
+    `Directive: Access the next record through the ${STORE_LINK_HTML}.`,
+  ]);
+
+  pushHistory(state, "assistant", reply);
+  state.updatedAt = nowIso();
+  return jsonWithChips(res, userMsg, {
+    reply,
+    type: "graham_kade_redirect",
   });
 }
 
@@ -1426,13 +1462,13 @@ export default async function handler(req, res) {
         intelligencePromoShown: false,
 
         hiddenSenderTracePending: false,
+        hiddenSenderRevealed: false,
 
         updatedAt: nowIso(),
       };
 
     const userMsg = normalizeText(message);
 
-    // Reset Creator Mode
     if (isCreatorReset(userMsg)) {
       state.creatorActive = false;
       state.creatorStep = 0;
@@ -1452,6 +1488,7 @@ export default async function handler(req, res) {
 
       state.intelligencePromoShown = false;
       state.hiddenSenderTracePending = false;
+      state.hiddenSenderRevealed = false;
 
       state.updatedAt = nowIso();
       sessions.set(key, state);
@@ -1487,7 +1524,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // Activate Creator Mode
     if (isCreatorPhrase(userMsg)) {
       state.creatorActive = true;
       state.creatorStep = 1;
@@ -1514,7 +1550,6 @@ export default async function handler(req, res) {
       return jsonWithChips(res, userMsg, { reply });
     }
 
-    // Creator Mode active has highest priority
     if (state.creatorActive) {
       sessions.set(key, state);
       return await handleCreatorMode({
@@ -1526,11 +1561,9 @@ export default async function handler(req, res) {
       });
     }
 
-    // ---- Normal mode message tracking
     state.turnCount = (state.turnCount || 0) + 1;
     pushHistory(state, "user", userMsg);
 
-    // Hidden sender easter egg triggers
     if (isFullHiddenSenderTrigger(userMsg)) {
       sessions.set(key, state);
       const out = await replyHiddenSenderPrompt(res, state, userMsg);
@@ -1540,8 +1573,12 @@ export default async function handler(req, res) {
 
     const singleLineHiddenReply = getSingleLineHiddenSenderResponse(userMsg);
     if (singleLineHiddenReply) {
-      await delay(700, 1000);
-      const reply = singleLineHiddenReply;
+      await delay(800, 1150);
+      const reply = joinLines([
+        `Observation: Partial encoded fragment detected.`,
+        `Action: Decoding available segment...`,
+        singleLineHiddenReply,
+      ]);
       pushHistory(state, "assistant", reply);
       state.updatedAt = nowIso();
       sessions.set(key, state);
@@ -1551,14 +1588,19 @@ export default async function handler(req, res) {
       });
     }
 
-    // Shipping Override flow in progress
+    if (state.hiddenSenderRevealed && asksWhoIsGrahamKade(userMsg)) {
+      sessions.set(key, state);
+      const out = await replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML);
+      sessions.set(key, state);
+      return out;
+    }
+
     if (state.shippingOverrideStep === 1 || state.shippingOverrideStep === 2) {
       const result = await handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML });
       sessions.set(key, state);
       return result;
     }
 
-    // Trigger the shipping override flow
     if (wantsToBuyBook(userMsg)) {
       state.shippingOverrideStep = 1;
       state.shippingOverrideOfferedAt = nowIso();
@@ -1578,7 +1620,6 @@ export default async function handler(req, res) {
       return jsonWithChips(res, userMsg, { reply });
     }
 
-    // Intelligence promo
     if (!state.intelligencePromoShown && wantsIntelligencePromo(userMsg)) {
       state.intelligencePromoShown = true;
       state.updatedAt = nowIso();
@@ -1597,9 +1638,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // ------------------------------------
-    // Normal-mode interceptors
-    // ------------------------------------
     if (asksAboutEasterEggs(userMsg)) {
       const out = await replyEasterEggs(res, state, userMsg);
       sessions.set(key, state);
@@ -1625,9 +1663,6 @@ export default async function handler(req, res) {
       return jsonWithChips(res, userMsg, { reply });
     }
 
-    // ------------------------------
-    // Normal Mode -> OpenAI
-    // ------------------------------
     const SYSTEM_PROMPT = `
 You are ADAM from the novel <i>Artificial</i>.
 
