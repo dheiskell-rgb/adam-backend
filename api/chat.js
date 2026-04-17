@@ -376,18 +376,13 @@ const HIDDEN_SENDER_TRIGGERS = {
   caesarNothingSeems: "QRWKLQJ LV DV LW VHHPV",
 };
 
-function normalizeEncodedMessage(msg) {
+function getEncodedLines(msg) {
   return String(msg || "")
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .split("\n")
     .map((line) => line.trim().replace(/[ \t]+/g, " "))
-    .filter(Boolean)
-    .join("\n");
-}
-
-function getEncodedLines(msg) {
-  return normalizeEncodedMessage(msg).split("\n").filter(Boolean);
+    .filter(Boolean);
 }
 
 function isOpenEyesLine(line) {
@@ -404,20 +399,9 @@ function isNothingSeemsLine(line) {
   );
 }
 
-function isFullHiddenSenderTrigger(msg) {
+function containsAnyHiddenSenderTrigger(msg) {
   const lines = getEncodedLines(msg);
-  const hasOpen = lines.some(isOpenEyesLine);
-  const hasNothing = lines.some(isNothingSeemsLine);
-  return hasOpen && hasNothing;
-}
-
-function getSingleLineHiddenSenderResponse(msg) {
-  const normalized = normalizeEncodedMessage(msg);
-
-  if (isOpenEyesLine(normalized)) return "OPEN YOUR EYES";
-  if (isNothingSeemsLine(normalized)) return "NOTHING IS AS IT SEEMS";
-
-  return null;
+  return lines.some((line) => isOpenEyesLine(line) || isNothingSeemsLine(line));
 }
 
 function asksWhoIsGrahamKade(msg) {
@@ -507,23 +491,6 @@ async function replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML) {
   return jsonWithChips(res, userMsg, {
     reply,
     type: "graham_kade_redirect",
-  });
-}
-
-async function replySingleLineFragment(res, state, userMsg, fragmentText) {
-  await delay(800, 1150);
-
-  const reply = joinLines([
-    `Observation: Partial encoded fragment detected.`,
-    `Action: Decoding available segment...`,
-    fragmentText,
-  ]);
-
-  pushHistory(state, "assistant", reply);
-  state.updatedAt = nowIso();
-  return jsonWithChips(res, userMsg, {
-    reply,
-    type: "hidden_sender_single_line",
   });
 }
 
@@ -1578,19 +1545,10 @@ export default async function handler(req, res) {
     state.turnCount = (state.turnCount || 0) + 1;
     pushHistory(state, "user", userMsg);
 
-    // Full encoded message
-    if (isFullHiddenSenderTrigger(userMsg)) {
+    // Any encoded fragment or combination should trigger the full ominous sequence
+    if (containsAnyHiddenSenderTrigger(userMsg)) {
       sessions.set(key, state);
       const out = await replyHiddenSenderPrompt(res, state, userMsg);
-      sessions.set(key, state);
-      return out;
-    }
-
-    // Single-line fragment only
-    const singleLineHiddenReply = getSingleLineHiddenSenderResponse(userMsg);
-    if (singleLineHiddenReply) {
-      sessions.set(key, state);
-      const out = await replySingleLineFragment(res, state, userMsg, singleLineHiddenReply);
       sessions.set(key, state);
       return out;
     }
