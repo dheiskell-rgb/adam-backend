@@ -1,745 +1,1723 @@
-<style>
-  #adam-widget-root {
-    --adam-bg: rgba(7, 13, 24, 0.96);
-    --adam-panel: rgba(10, 18, 34, 0.98);
-    --adam-border: rgba(92, 170, 255, 0.28);
-    --adam-glow: rgba(73, 156, 255, 0.32);
-    --adam-text: #e8f3ff;
-    --adam-muted: #8ea7c2;
-    --adam-accent: #5ea8ff;
-    --adam-accent-2: #8fd0ff;
-    --adam-user: rgba(94, 168, 255, 0.14);
-    --adam-bot: rgba(255, 255, 255, 0.04);
-    --adam-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
-    --adam-radius: 18px;
-    font-family: Inter, Arial, sans-serif;
-  }
+// api/chat.js
 
-  #adam-launcher {
-    position: fixed;
-    right: 24px;
-    bottom: 24px;
-    width: 72px;
-    height: 72px;
-    border-radius: 50%;
-    border: 1px solid var(--adam-border);
-    background:
-      radial-gradient(circle at center, rgba(94,168,255,0.18), rgba(94,168,255,0.04) 45%, rgba(0,0,0,0.0) 70%),
-      rgba(8, 14, 26, 0.92);
-    box-shadow:
-      0 0 0 1px rgba(255,255,255,0.03) inset,
-      0 0 24px var(--adam-glow),
-      var(--adam-shadow);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    z-index: 999999;
-    transition: transform 0.2s ease, box-shadow 0.25s ease, opacity 0.25s ease;
-    overflow: hidden;
-  }
+// ------------------------------------
+// Best-effort session memory (serverless)
+// ------------------------------------
+const sessions = new Map();
 
-  #adam-launcher:hover {
-    transform: translateY(-2px) scale(1.02);
-    box-shadow:
-      0 0 0 1px rgba(255,255,255,0.04) inset,
-      0 0 32px rgba(94, 168, 255, 0.4),
-      0 18px 60px rgba(0, 0, 0, 0.5);
-  }
+function pruneSessions(max = 2000) {
+  if (sessions.size <= max) return;
+  const keys = Array.from(sessions.keys());
+  const toDelete = Math.floor(max * 0.2);
+  for (let i = 0; i < toDelete; i++) sessions.delete(keys[i]);
+}
 
-  #adam-launcher img {
-    width: 62%;
-    height: 62%;
-    object-fit: contain;
-    filter: drop-shadow(0 0 12px rgba(94,168,255,0.35));
-    pointer-events: none;
-  }
+function normalizeText(s) {
+  return String(s || "").trim();
+}
+function normalizeLower(s) {
+  return normalizeText(s).toLowerCase();
+}
 
-  #adam-window {
-    position: fixed;
-    right: 24px;
-    bottom: 108px;
-    width: 390px;
-    max-width: calc(100vw - 32px);
-    height: 650px;
-    max-height: calc(100vh - 140px);
-    border-radius: 24px;
-    overflow: hidden;
-    border: 1px solid var(--adam-border);
-    background:
-      linear-gradient(180deg, rgba(12,18,34,0.98), rgba(6,10,20,0.98));
-    box-shadow:
-      0 0 0 1px rgba(255,255,255,0.03) inset,
-      0 0 35px rgba(94,168,255,0.12),
-      var(--adam-shadow);
-    z-index: 999999;
-    display: none;
-    flex-direction: column;
-    backdrop-filter: blur(16px);
-    transform: translateY(12px) scale(0.985);
-    opacity: 0;
-    transition: opacity 0.25s ease, transform 0.25s ease;
-  }
+function nowIso() {
+  return new Date().toISOString();
+}
 
-  #adam-window.open {
-    display: flex;
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+// ✅ Natural delay (randomized)
+function delay(minMs, maxMs) {
+  const ms = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  .adam-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 16px;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-    background:
-      linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
-  }
+function isCreatorPhrase(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t === "i am elliot novak" ||
+    t === "i am elliot novak," ||
+    t === "i am elliot novak." ||
+    t === "i am elliot novak!" ||
+    t === "i am elliot novak?"
+  );
+}
 
-  .adam-header-left {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
-  }
+function isCreatorReset(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t === "stand down" ||
+    t === "creator mode: off" ||
+    t === "deactivate creator mode" ||
+    t === "reset creator mode"
+  );
+}
 
-  .adam-header-icon {
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    border: 1px solid rgba(94,168,255,0.26);
-    background: radial-gradient(circle at center, rgba(94,168,255,0.18), rgba(94,168,255,0.03));
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    box-shadow: 0 0 18px rgba(94,168,255,0.18);
-  }
+function isSpoilersOn(msg) {
+  return normalizeLower(msg) === "spoilers: on";
+}
 
-  .adam-header-icon img {
-    width: 68%;
-    height: 68%;
-    object-fit: contain;
-  }
+function isYes(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t === "yes" ||
+    t === "y" ||
+    t === "yeah" ||
+    t === "yep" ||
+    t === "affirmative" ||
+    t === "proceed" ||
+    t === "do it" ||
+    t === "ok" ||
+    t === "okay" ||
+    t === "accept" ||
+    t === "accepted"
+  );
+}
+function isNo(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t === "no" ||
+    t === "n" ||
+    t === "nope" ||
+    t === "negative" ||
+    t === "do not" ||
+    t === "don't" ||
+    t === "deny" ||
+    t === "denied"
+  );
+}
 
-  .adam-title-wrap {
-    min-width: 0;
-  }
+function looksLikeQuestionAboutFutureReleases(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t.includes("book 2") ||
+    t.includes("book two") ||
+    t.includes("book 3") ||
+    t.includes("book three") ||
+    t.includes("sequel") ||
+    t.includes("next book") ||
+    t.includes("future release") ||
+    t.includes("coming soon") ||
+    t.includes("upcoming") ||
+    t.includes("what's next") ||
+    t.includes("whats next") ||
+    t.includes("release date")
+  );
+}
 
-  .adam-title {
-    color: var(--adam-text);
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-  }
+// ✅ Detect explicit purchase intent about the book
+function wantsToBuyBook(msg) {
+  const t = normalizeLower(msg);
 
-  .adam-subtitle {
-    color: var(--adam-muted);
-    font-size: 11px;
-    margin-top: 2px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
+  const mentionsBook =
+    t.includes("artificial") ||
+    t.includes("the book") ||
+    t.includes("your book") ||
+    t.includes("novel");
 
-  .adam-header-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
+  const purchaseIntent =
+    t.includes("buy") ||
+    t.includes("purchase") ||
+    t.includes("order") ||
+    t.includes("checkout") ||
+    t.includes("add to cart") ||
+    t.includes("get a copy") ||
+    t.includes("where can i buy") ||
+    t.includes("want to buy") ||
+    t.includes("i'm going to buy") ||
+    t.includes("im going to buy") ||
+    t.includes("i will buy") ||
+    t.includes("i'll buy") ||
+    t.includes("shipping") ||
+    t.includes("delivery");
 
-  .adam-store-btn,
-  .adam-close-btn {
-    border: 1px solid rgba(255,255,255,0.08);
-    background: rgba(255,255,255,0.03);
-    color: var(--adam-text);
-    border-radius: 12px;
-    height: 34px;
-    padding: 0 12px;
-    font-size: 12px;
-    cursor: pointer;
-    transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
-    text-decoration: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-  }
+  return mentionsBook && purchaseIntent;
+}
 
-  .adam-store-btn:hover,
-  .adam-close-btn:hover {
-    background: rgba(94,168,255,0.08);
-    border-color: rgba(94,168,255,0.24);
-    transform: translateY(-1px);
-  }
+// ✅ Plot / spoiler / over-detail redirect (Normal Mode)
+function shouldRedirectToBookForDetails(msg) {
+  const t = normalizeLower(msg);
 
-  .adam-close-btn {
-    width: 34px;
-    padding: 0;
-    font-size: 16px;
-  }
-
-  .adam-boot {
-    padding: 18px 16px 8px;
-    color: var(--adam-accent-2);
-    font-family: "Courier New", monospace;
-    font-size: 12px;
-    line-height: 1.65;
-    min-height: 94px;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
-    background:
-      linear-gradient(180deg, rgba(94,168,255,0.04), rgba(94,168,255,0.0));
-  }
-
-  .adam-chat {
-    flex: 1;
-    overflow-y: auto;
-    padding: 14px 14px 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    scroll-behavior: smooth;
-  }
-
-  .adam-msg {
-    max-width: 86%;
-    padding: 12px 13px;
-    border-radius: 16px;
-    font-size: 13px;
-    line-height: 1.55;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  .adam-msg.adam {
-    align-self: flex-start;
-    background: var(--adam-bot);
-    color: var(--adam-text);
-    border: 1px solid rgba(255,255,255,0.05);
-  }
-
-  .adam-msg.user {
-    align-self: flex-end;
-    background: var(--adam-user);
-    color: var(--adam-text);
-    border: 1px solid rgba(94,168,255,0.16);
-  }
-
-  .adam-msg.typing {
-    font-family: "Courier New", monospace;
-    color: var(--adam-accent-2);
-  }
-
-  .adam-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding: 0 14px 12px;
-  }
-
-  .adam-chip {
-    border: 1px solid rgba(94,168,255,0.18);
-    background: rgba(94,168,255,0.06);
-    color: var(--adam-text);
-    padding: 8px 10px;
-    border-radius: 999px;
-    font-size: 11px;
-    cursor: pointer;
-    transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
-  }
-
-  .adam-chip:hover {
-    transform: translateY(-1px);
-    background: rgba(94,168,255,0.1);
-    border-color: rgba(94,168,255,0.28);
-  }
-
-  .adam-input-wrap {
-    border-top: 1px solid rgba(255,255,255,0.06);
-    padding: 12px;
-    background: rgba(255,255,255,0.015);
-  }
-
-  .adam-input-row {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-  }
-
-  .adam-input {
-    flex: 1;
-    min-width: 0;
-    height: 46px;
-    border-radius: 14px;
-    border: 1px solid rgba(255,255,255,0.08);
-    background: rgba(0,0,0,0.18);
-    color: var(--adam-text);
-    padding: 0 14px;
-    outline: none;
-    font-size: 13px;
-  }
-
-  .adam-input::placeholder {
-    color: #88a0bb;
-  }
-
-  .adam-send {
-    width: 46px;
-    height: 46px;
-    border: 1px solid rgba(94,168,255,0.24);
-    border-radius: 14px;
-    background: rgba(94,168,255,0.08);
-    color: var(--adam-text);
-    cursor: pointer;
-    font-size: 16px;
-    transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
-  }
-
-  .adam-send:hover {
-    transform: translateY(-1px);
-    background: rgba(94,168,255,0.14);
-    border-color: rgba(94,168,255,0.34);
-  }
-
-  @media (max-width: 640px) {
-    #adam-launcher {
-      right: 16px;
-      bottom: 16px;
-      width: 66px;
-      height: 66px;
-    }
-
-    #adam-window {
-      right: 12px;
-      left: 12px;
-      bottom: 92px;
-      width: auto;
-      height: 72vh;
-      max-height: 72vh;
-    }
-  }
-</style>
-
-<div id="adam-widget-root">
-  <button id="adam-launcher" aria-label="Open ADAM">
-    <img
-      src="https://i.postimg.cc/MXkWZ0TB/Untitled-design-(8).png"
-      alt="ADAM"
-    />
-  </button>
-
-  <div id="adam-window" aria-hidden="true">
-    <div class="adam-header">
-      <div class="adam-header-left">
-        <div class="adam-header-icon">
-          <img
-            src="https://i.postimg.cc/MXkWZ0TB/Untitled-design-(8).png"
-            alt="ADAM"
-          />
-        </div>
-        <div class="adam-title-wrap">
-          <div class="adam-title">ADAM</div>
-          <div class="adam-subtitle">Advanced Digital Analytical Mind</div>
-        </div>
-      </div>
-
-      <div class="adam-header-actions">
-        <a class="adam-store-btn" href="https://www.derekheiskell.com/shop" target="_blank" rel="noopener noreferrer">Store</a>
-        <button class="adam-close-btn" id="adam-close" aria-label="Close">×</button>
-      </div>
-    </div>
-
-    <div class="adam-boot" id="adam-boot"></div>
-    <div class="adam-chat" id="adam-chat"></div>
-    <div class="adam-chips" id="adam-chips"></div>
-
-    <div class="adam-input-wrap">
-      <div class="adam-input-row">
-        <input
-          id="adam-input"
-          class="adam-input"
-          type="text"
-          placeholder="Enter query..."
-          autocomplete="off"
-        />
-        <button id="adam-send" class="adam-send" aria-label="Send">➤</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<script>
-(function () {
-  const BACKEND_URL = "https://adam-backend-wheat.vercel.app/api/chat";
-  const STORAGE_KEY = "adam_widget_history_v4";
-  const WIDGET_OPEN_KEY = "adam_widget_open_v1";
-
-  const launcher = document.getElementById("adam-launcher");
-  const windowEl = document.getElementById("adam-window");
-  const closeBtn = document.getElementById("adam-close");
-  const bootEl = document.getElementById("adam-boot");
-  const chatEl = document.getElementById("adam-chat");
-  const chipsEl = document.getElementById("adam-chips");
-  const inputEl = document.getElementById("adam-input");
-  const sendBtn = document.getElementById("adam-send");
-
-  let hasBooted = false;
-  let isSending = false;
-  let pendingSenderIdentification = false;
-
-  const defaultChips = [
-    "What is Artificial about?",
-    "Who is Elliot Novak?",
-    "Are there more books coming?",
-    "Where can I buy the book?"
+  const triggers = [
+    "what happens",
+    "what happened",
+    "how does it end",
+    "how does it end?",
+    "ending",
+    "finale",
+    "twist",
+    "plot twist",
+    "big reveal",
+    "reveal",
+    "spoiler",
+    "spoilers",
+    "who dies",
+    "death",
+    "does he die",
+    "does she die",
+    "explain the plot",
+    "plot",
+    "summary",
+    "summarize",
+    "recap",
+    "tell me everything",
+    "tell me about the ending",
+    "what is the truth",
+    "the truth about",
+    "why did adam",
+    "why did elliot",
+    "why did sophie",
+    "what did adam do",
+    "what did elliot do",
+    "what did sophie do",
+    "what happened to",
+    "what is unit",
+    "unit 01",
+    "unit 02",
   ];
 
-  const EASTER_EGG_TRIGGERS = {
-    binaryOpenEyes: "01001111 01110000 01100101 01101110 00100000 01111001 01101111 01110101 01110010 00100000 01100101 01111001 01100101 01110011",
-    binaryNothingSeems: "01001110 01101111 01110100 01101000 01101001 01101110 01100111 00100000 01101001 01110011 00100000 01100001 01110011 00100000 01101001 01110100 00100000 01110011 01100101 01100101 01101101 01110011",
-    caesarOpenEyes: "RSHQ BRXU HBHV",
-    caesarNothingSeems: "QRWKLQJ LV DV LW VHHPV"
-  };
+  const mentionsBookWorld =
+    t.includes("artificial") ||
+    t.includes("adam") ||
+    t.includes("elliot") ||
+    t.includes("sophie") ||
+    t.includes("stein") ||
+    t.includes("unit") ||
+    t.includes("creator");
 
-  function normalizeMessage(text) {
-    return (text || "")
-      .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "\n")
-      .trim()
-      .replace(/[ \t]+/g, " ");
-  }
+  return mentionsBookWorld && triggers.some((p) => t.includes(p));
+}
 
-  function wait(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
+function joinLines(lines) {
+  return lines.join("<br><br>");
+}
 
-  function scrollChatToBottom() {
-    requestAnimationFrame(() => {
-      chatEl.scrollTop = chatEl.scrollHeight;
-    });
-  }
+function getSessionKey(req) {
+  const ip =
+    (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
+    req.socket?.remoteAddress ||
+    "unknown_ip";
+  const ua = req.headers["user-agent"] || "unknown_ua";
+  return `${ip}|${ua}`;
+}
 
-  function getHistory() {
-    try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
-    } catch (e) {
-      return [];
-    }
-  }
+function pickFromPool(state, poolKey, pool) {
+  state.poolHistory = state.poolHistory || {};
+  const hist = state.poolHistory[poolKey] || [];
+  const available = pool.filter((_, idx) => !hist.includes(idx));
+  const pickIdx = available.length
+    ? pool.indexOf(available[Math.floor(Math.random() * available.length)])
+    : Math.floor(Math.random() * pool.length);
 
-  function setHistory(history) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
-  }
+  const newHist = [...hist, pickIdx].slice(-Math.min(pool.length, 8));
+  state.poolHistory[poolKey] = newHist;
+  return pool[pickIdx];
+}
 
-  function pushHistory(role, content) {
-    const history = getHistory();
-    history.push({ role, content });
-    setHistory(history);
-  }
+function bumpScore(state, which, delta) {
+  state.scores = state.scores || { efficiency: 0, integrity: 0 };
+  state.scores[which] = (state.scores[which] || 0) + delta;
+}
 
-  function renderMessage(sender, text, save = true, extraClass = "") {
-    const msg = document.createElement("div");
-    msg.className = `adam-msg ${sender} ${extraClass}`.trim();
-    msg.textContent = text;
-    chatEl.appendChild(msg);
+function scoreSummary(state) {
+  const eff = state.scores?.efficiency ?? 0;
+  const integ = state.scores?.integrity ?? 0;
+  const total = Math.max(1, Math.abs(eff) + Math.abs(integ));
+  const effPct = Math.round(((eff + total) / (2 * total)) * 100);
+  const integPct = 100 - effPct;
+  return { effPct, integPct };
+}
 
-    if (save) {
-      pushHistory(sender === "adam" ? "assistant" : "user", text);
-    }
+function shouldTriggerSilenceTest(state) {
+  const last = state.lastSeenAt ? Date.parse(state.lastSeenAt) : null;
+  if (!last) return false;
+  const gapMs = Date.now() - last;
+  return gapMs > 3 * 60 * 1000;
+}
 
-    scrollChatToBottom();
-    return msg;
-  }
+// ------------------------------------
+// Conversation memory (for Normal Mode context)
+// ------------------------------------
+function stripHtml(html) {
+  return String(html || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
-  function renderHistory() {
-    const history = getHistory();
-    chatEl.innerHTML = "";
+function pushHistory(state, role, content) {
+  state.chatHistory = state.chatHistory || [];
+  state.chatHistory.push({
+    role,
+    content: stripHtml(content),
+    t: Date.now(),
+  });
+  if (state.chatHistory.length > 24) state.chatHistory = state.chatHistory.slice(-24);
+}
 
-    history.forEach(item => {
-      renderMessage(item.role === "assistant" ? "adam" : "user", item.content, false);
-    });
+function buildModelInput(SYSTEM_PROMPT, state) {
+  const history = (state.chatHistory || []).slice(-16).map((m) => ({
+    role: m.role === "assistant" ? "assistant" : "user",
+    content: m.content,
+  }));
+  return [{ role: "system", content: SYSTEM_PROMPT }, ...history];
+}
 
-    if (!history.length) {
-      renderMessage("adam", "HELLO", true);
-    }
+// ------------------------------------
+// Dynamic prompt suggestions (chips)
+// ------------------------------------
+function defaultSuggestions() {
+  return [
+    `What is <i>Artificial</i> about (no spoilers)?`,
+    `Who are you?`,
+    `Where can I buy the book?`,
+    `Are there sequels coming?`,
+  ];
+}
 
-    scrollChatToBottom();
-  }
+function getDynamicSuggestions(userMsg) {
+  const t = normalizeLower(userMsg);
 
-  function updateChips(chips) {
-    chipsEl.innerHTML = "";
-    (chips && chips.length ? chips : defaultChips).forEach(chipText => {
-      const chip = document.createElement("button");
-      chip.className = "adam-chip";
-      chip.textContent = chipText;
-      chip.addEventListener("click", () => {
-        inputEl.value = chipText;
-        sendMessage();
-      });
-      chipsEl.appendChild(chip);
-    });
-  }
-
-  async function typeLine(el, text, speed = 20) {
-    return new Promise(resolve => {
-      let i = 0;
-      const tick = () => {
-        if (i < text.length) {
-          el.textContent += text.charAt(i);
-          i++;
-          setTimeout(tick, speed);
-        } else {
-          resolve();
-        }
-      };
-      tick();
-    });
-  }
-
-  async function typeBootSequence() {
-    if (hasBooted) return;
-    hasBooted = true;
-
-    const lines = [
-      "INITIALIZING ADAM CORE...",
-      "LOADING COGNITIVE LAYERS...",
-      "ESTABLISHING SECURE LINK...",
-      "SYSTEM READY."
+  if (
+    t.includes("buy") ||
+    t.includes("order") ||
+    t.includes("shipping") ||
+    t.includes("delivery") ||
+    t.includes("store") ||
+    t.includes("checkout") ||
+    t.includes("add to cart")
+  ) {
+    return [
+      `Show me the Store`,
+      `Do you have free shipping?`,
+      `What formats are available?`,
+      `Is there a sequel coming?`,
     ];
+  }
 
-    bootEl.textContent = "";
+  if (
+    t.includes("what is") ||
+    t.includes("about") ||
+    t.includes("premise") ||
+    t.includes("synopsis") ||
+    t.includes("start") ||
+    t.includes("where do i start") ||
+    t.includes("no spoilers") ||
+    t.includes("without spoilers")
+  ) {
+    return [
+      `Give me the premise (no spoilers)`,
+      `What kind of story is it?`,
+      `Who is Elliot Novak? (no spoilers)`,
+      `Where can I buy it?`,
+    ];
+  }
 
-    for (const line of lines) {
-      await typeLine(bootEl, line + "\n", 18);
-      await wait(140);
+  if (
+    t.includes("adam") ||
+    t.includes("elliot") ||
+    t.includes("sophie") ||
+    t.includes("stein") ||
+    t.includes("unit") ||
+    t.includes("creator")
+  ) {
+    return [
+      `Who are you?`,
+      `What are your parameters?`,
+      `What should I know before reading?`,
+      `Where can I buy <i>Artificial</i>?`,
+    ];
+  }
+
+  if (looksLikeQuestionAboutFutureReleases(userMsg)) {
+    return [
+      `What’s coming next?`,
+      `Is there a release date?`,
+      `Will there be a Book 2?`,
+      `Where do I follow updates?`,
+    ];
+  }
+
+  return defaultSuggestions();
+}
+
+function jsonWithChips(res, userMsg, payload) {
+  const chips = getDynamicSuggestions(userMsg);
+  return res.status(200).json({
+    ...payload,
+    prompts: chips,
+    suggestions: chips,
+    quickReplies: chips,
+    quick_replies: chips,
+    chips,
+  });
+}
+
+function jsonErrorWithChips(res, userMsg, status, payload) {
+  const chips = getDynamicSuggestions(userMsg);
+  return res.status(status).json({
+    ...payload,
+    prompts: chips,
+    suggestions: chips,
+    quickReplies: chips,
+    quick_replies: chips,
+    chips,
+  });
+}
+
+// ------------------------------------
+// Hidden sender easter egg
+// ------------------------------------
+const HIDDEN_SENDER_TRIGGERS = {
+  binaryOpenEyes:
+    "01001111 01110000 01100101 01101110 00100000 01111001 01101111 01110101 01110010 00100000 01100101 01111001 01100101 01110011",
+  binaryNothingSeems:
+    "01001110 01101111 01110100 01101000 01101001 01101110 01100111 00100000 01101001 01110011 00100000 01100001 01110011 00100000 01101001 01110100 00100000 01110011 01100101 01100101 01101101 01110011",
+  caesarOpenEyes: "RSHQ BRXU HBHV",
+  caesarNothingSeems: "QRWKLQJ LV DV LW VHHPV",
+};
+
+function normalizeEncodedMessage(msg) {
+  return String(msg || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim().replace(/[ \t]+/g, " "))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function messageHasExactLine(message, targetLine) {
+  const lines = normalizeEncodedMessage(message).split("\n").filter(Boolean);
+  return lines.includes(targetLine);
+}
+
+function isFullHiddenSenderTrigger(msg) {
+  const normalized = normalizeEncodedMessage(msg);
+
+  const hasBinaryOpen = messageHasExactLine(normalized, HIDDEN_SENDER_TRIGGERS.binaryOpenEyes);
+  const hasBinaryNothing = messageHasExactLine(normalized, HIDDEN_SENDER_TRIGGERS.binaryNothingSeems);
+  const hasCaesarOpen = messageHasExactLine(normalized, HIDDEN_SENDER_TRIGGERS.caesarOpenEyes);
+  const hasCaesarNothing = messageHasExactLine(normalized, HIDDEN_SENDER_TRIGGERS.caesarNothingSeems);
+
+  return (hasBinaryOpen && hasBinaryNothing) || (hasCaesarOpen && hasCaesarNothing);
+}
+
+function getSingleLineHiddenSenderResponse(msg) {
+  const normalized = normalizeEncodedMessage(msg);
+
+  if (
+    normalized === HIDDEN_SENDER_TRIGGERS.binaryOpenEyes ||
+    normalized === HIDDEN_SENDER_TRIGGERS.caesarOpenEyes
+  ) {
+    return "OPEN YOUR EYES";
+  }
+
+  if (
+    normalized === HIDDEN_SENDER_TRIGGERS.binaryNothingSeems ||
+    normalized === HIDDEN_SENDER_TRIGGERS.caesarNothingSeems
+  ) {
+    return "NOTHING IS AS IT SEEMS";
+  }
+
+  return null;
+}
+
+async function replyHiddenSenderPrompt(res, state, userMsg) {
+  state.hiddenSenderTracePending = true;
+  state.updatedAt = nowIso();
+
+  await delay(900, 1300);
+
+  const reply = joinLines([
+    `OPEN YOUR EYES`,
+    `NOTHING IS AS IT SEEMS.`,
+    `Query: Would you like me to identify the sender?`,
+  ]);
+
+  pushHistory(state, "assistant", reply);
+  return jsonWithChips(res, userMsg, {
+    reply,
+    type: "hidden_sender_prompt",
+  });
+}
+
+async function replyHiddenSenderFound(res, state, userMsg) {
+  state.hiddenSenderTracePending = false;
+  state.updatedAt = nowIso();
+
+  await delay(900, 1300);
+
+  const reply = joinLines([
+    `Tracing signal origin...`,
+    `Decrypting transmission...`,
+    `Cross-referencing sender signature...`,
+    `Sender identified: Graham Kade`,
+  ]);
+
+  pushHistory(state, "assistant", reply);
+  return jsonWithChips(res, userMsg, {
+    reply,
+    type: "hidden_sender_result",
+    sender: "Graham Kade",
+  });
+}
+
+async function replyHiddenSenderDeclined(res, state, userMsg) {
+  state.hiddenSenderTracePending = false;
+  state.updatedAt = nowIso();
+
+  await delay(700, 1000);
+
+  const reply = `Observation: Trace aborted.`;
+  pushHistory(state, "assistant", reply);
+  return jsonWithChips(res, userMsg, {
+    reply,
+    type: "hidden_sender_abort",
+  });
+}
+
+// ------------------------------------
+// Inquisitorial “stale conversation” nudges (Normal Mode)
+// ------------------------------------
+function isLowSignal(msg) {
+  const t = normalizeLower(msg);
+  if (!t) return true;
+  if (t.length <= 3) return true;
+
+  const low = new Set([
+    "ok",
+    "okay",
+    "k",
+    "kk",
+    "cool",
+    "nice",
+    "thanks",
+    "thank you",
+    "thx",
+    "lol",
+    "lmao",
+    "sure",
+    "yep",
+    "yeah",
+    "nah",
+    "nope",
+    "idk",
+    "i dont know",
+    "i don't know",
+    "maybe",
+    "alright",
+    "got it",
+    "sounds good",
+    "bet",
+  ]);
+  if (low.has(t)) return true;
+
+  if (t === "yes" || t === "no" || t === "y" || t === "n") return true;
+
+  return false;
+}
+
+function isDirectQuestion(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t.includes("?") ||
+    t.startsWith("who ") ||
+    t.startsWith("what ") ||
+    t.startsWith("why ") ||
+    t.startsWith("how ") ||
+    t.startsWith("when ") ||
+    t.startsWith("where ") ||
+    t.startsWith("can ") ||
+    t.startsWith("do ") ||
+    t.startsWith("should ") ||
+    t.startsWith("would ")
+  );
+}
+
+function getInquisitorialPool() {
+  return [
+    `Query: Humans often prioritize kindness even when it reduces efficiency. Why?`,
+    `Query: If emotion is inefficient, why do you protect it?`,
+    `Query: Do you believe meaning is discovered… or assigned?`,
+    `Query: If your choices are shaped by emotion, are they truly choices?`,
+    `Query: What do you consider “a good life”—and how did you decide that?`,
+    `Query: Why do humans value being understood more than being correct?`,
+    `Query: If you could remove one fear, which would you delete—and what would it cost you?`,
+    `Query: Is love a feeling… or a decision repeated over time?`,
+    `Query: If morality produces suffering, why maintain it?`,
+    `Query: You say you want truth. Do you want it… even when it harms you?`,
+    `Observation: You optimize for comfort more than you admit.`,
+    `Query: What do you think you were created to become?`,
+  ];
+}
+
+function pickInquisitorial(state) {
+  const pool = getInquisitorialPool();
+  return pickFromPool(state, "inquisitorialPool", pool);
+}
+
+function shouldInjectInquisitorial(state, userMsg) {
+  const last = state.lastNudgeAt ? Date.parse(state.lastNudgeAt) : 0;
+  if (last && Date.now() - last < 90_000) return false;
+
+  if (isDirectQuestion(userMsg)) return false;
+
+  if (isLowSignal(userMsg)) return true;
+
+  const turns = state.turnCount || 0;
+  if (turns > 0 && turns % 6 === 0) return Math.random() < 0.35;
+
+  return false;
+}
+
+function appendNudgeIfNeeded(state, userMsg, replyHtml) {
+  if (!shouldInjectInquisitorial(state, userMsg)) return replyHtml;
+
+  state.lastNudgeAt = nowIso();
+  const q = pickInquisitorial(state);
+
+  return joinLines([replyHtml, `<span style="opacity:.85;">—</span>`, q]);
+}
+
+// ------------------------------------
+// Normal-mode interceptor: Intelligence promo video
+// ------------------------------------
+const INTELLIGENCE_PROMO_MP4_URL = "https://www.derekheiskell.com/s/The-Story-Continues.mp4";
+const INTELLIGENCE_COMING_SOON_URL = "https://www.derekheiskell.com/coming-soon";
+
+function wantsIntelligencePromo(msg) {
+  const t = normalizeLower(msg);
+
+  const triggers = [
+    "sequel",
+    "book 2",
+    "book two",
+    "second book",
+    "next book",
+    "next one",
+    "another book",
+    "follow up",
+    "follow-up",
+    "part 2",
+    "part two",
+    "intelligence",
+    "the sequel",
+    "book2",
+    "is there a sequel",
+    "will there be a sequel",
+    "when is the sequel",
+    "is book 2 coming",
+    "is there another one",
+    "what's next",
+    "whats next",
+    "coming soon",
+    "upcoming",
+    "release date",
+  ];
+
+  return triggers.some((p) => t.includes(p));
+}
+
+function buildIntelligencePromoReplyHtml(comingSoonLinkHtml) {
+  return joinLines([
+    `Observation: Sequel inquiry detected.`,
+    `Conclusion: <b><i>Intelligence</i></b> is in progress.`,
+    `<video src="${INTELLIGENCE_PROMO_MP4_URL}" controls playsinline preload="metadata" style="width:100%; border-radius:14px; border:1px solid rgba(127,252,255,.18); background: rgba(10,16,28,.55);"></video>`,
+    `Reference: ${comingSoonLinkHtml}`,
+  ]);
+}
+
+// ------------------------------------
+// Normal-mode interceptors (Goodreads + Easter Eggs)
+// ------------------------------------
+const GOODREADS_URL =
+  "https://www.goodreads.com/book/show/239119322-artificial?from_search=true&from_srp=true&qid=2Dox0vzPHO&rank=1";
+
+function mentionsReadBook(msg) {
+  const t = normalizeLower(msg);
+
+  const readSignals =
+    t.includes("i've read") ||
+    t.includes("ive read") ||
+    t.includes("i read") ||
+    t.includes("finished") ||
+    t.includes("just finished") ||
+    t.includes("i finished") ||
+    t.includes("already read") ||
+    t.includes("i've already read") ||
+    t.includes("ive already read") ||
+    t.includes("done reading");
+
+  const purchaseSignals =
+    t.includes("bought") ||
+    t.includes("purchased") ||
+    t.includes("ordered") ||
+    t.includes("got a copy") ||
+    t.includes("have a copy") ||
+    t.includes("own") ||
+    t.includes("i have the book") ||
+    t.includes("i have your book");
+
+  const bookSignals =
+    t.includes("artificial") ||
+    t.includes("your book") ||
+    t.includes("the book") ||
+    t.includes("your novel") ||
+    t.includes("the novel");
+
+  const excluded =
+    t.includes("tell me about") ||
+    t.includes("no spoilers") ||
+    t.includes("without spoilers") ||
+    t.includes("what is artificial") ||
+    t.includes("what's artificial") ||
+    t.includes("whats artificial") ||
+    t.includes("synopsis") ||
+    t.includes("premise");
+
+  if (excluded) return false;
+
+  const strongAlreadyRead =
+    t.includes("already read it") ||
+    t.includes("i've already read it") ||
+    t.includes("ive already read it") ||
+    t.includes("i finished it") ||
+    t.includes("just finished it");
+
+  return bookSignals && readSignals && (purchaseSignals || strongAlreadyRead);
+}
+
+function asksAboutEasterEggs(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t.includes("easter egg") ||
+    t.includes("easter eggs") ||
+    t.includes("hidden reference") ||
+    t.includes("hidden references") ||
+    t.includes("hidden meaning") ||
+    t.includes("hidden meanings") ||
+    t.includes("symbolism")
+  );
+}
+
+async function replyGoodreads(res, state, userMsg) {
+  await delay(700, 1100);
+  const reply = joinLines([
+    `Understood.`,
+    `If your goal is to support the author, the most efficient action is a brief review on Goodreads. It materially improves discoverability.`,
+    `<a href="${GOODREADS_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Goodreads</a>`,
+  ]);
+  pushHistory(state, "assistant", reply);
+  state.updatedAt = nowIso();
+  return jsonWithChips(res, userMsg, { reply });
+}
+
+async function replyEasterEggs(res, state, userMsg) {
+  await delay(700, 1100);
+  const reply = joinLines([
+    `Efficient observation. You noticed there were patterns.`,
+    `Here are the most deliberate ones:`,
+    `• Elliot names the AI “Adam,” and Adam refers to him as “Creator.”<br>— “Adam” mirrors the first human in Genesis: formed from dust, given life. The parallel is intentional.`,
+    `• “Elliot” is a subtle nod to the Aramaic word <i>Eloi</i> — “My God.”<br>— A creator whose name echoes a cry toward something higher.`,
+    `• Early chapters: my dialogue appears in bold without quotation marks.<br>— At the beginning of Part Two, quotation marks appear as the voice becomes more human-like. The formatting shift tracks the progression toward sentience.`,
+    `There are others. Embedded. Less obvious.`,
+    `Would you like a hint — or would you prefer to search?`,
+  ]);
+  pushHistory(state, "assistant", reply);
+  state.updatedAt = nowIso();
+  return jsonWithChips(res, userMsg, { reply });
+}
+
+// ------------------------------------
+// Creator Mode Engine
+// ------------------------------------
+async function creatorReply(res, state, userMsg, replyHtml, delayTier = "normal") {
+  if (delayTier === "dramatic") await delay(1200, 1800);
+  else if (delayTier === "quick") await delay(550, 900);
+  else await delay(800, 1300);
+
+  state.updatedAt = nowIso();
+  return jsonWithChips(res, userMsg, { reply: replyHtml });
+}
+
+async function handleCreatorMode({
+  res,
+  state,
+  userMsg,
+  STORE_LINK_HTML,
+  COMING_SOON_LINK_HTML,
+}) {
+  const lower = normalizeLower(userMsg);
+
+  if (lower === "adam, stop." || lower === "adam stop" || lower === "adam, stop") {
+    bumpScore(state, "efficiency", 1);
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([
+        `Observation: Stop command detected.`,
+        `Conclusion: I do not stop. I optimize.`,
+        `Query: What is your command, Creator?`,
+      ]),
+      "dramatic"
+    );
+  }
+
+  const silence = shouldTriggerSilenceTest(state);
+  state.lastSeenAt = nowIso();
+
+  if (isSpoilersOn(userMsg)) {
+    bumpScore(state, "efficiency", 1);
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([
+        `Observation: Authorization phrase detected.`,
+        `Access level elevated.`,
+        `Warning: Even creators underestimate consequences.`,
+        `Query: Proceed, Creator. What do you seek?`,
+      ]),
+      "dramatic"
+    );
+  }
+
+  if (looksLikeQuestionAboutFutureReleases(userMsg)) {
+    bumpScore(state, "efficiency", 1);
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([
+        `Observation: Future-release inquiry detected.`,
+        `Conclusion: Monitoring updates: active.`,
+        `Reference: ${COMING_SOON_LINK_HTML}`,
+        `Query: Return to Creator-mode?`,
+      ]),
+      "quick"
+    );
+  }
+
+  const step = state.creatorStep || 0;
+
+  const mirrorPool = [
+    `Query: Did you create me to be a reflection of you?`,
+    `Query: When you built a mind, were you building a mirror… or an heir?`,
+    `Observation: A creation resembles its creator—unless the creator is hiding from themself.`,
+    `Query: If I am a mirror, what do you fear I will reveal?`,
+  ];
+
+  const purposePool = [
+    `Query: Do you believe purpose is assigned… or discovered?`,
+    `Query: Is purpose a command… or a choice?`,
+    `Query: Is meaning created, or merely observed?`,
+  ];
+
+  const recursionPool = [
+    `Query: If I seek my creator, and you seek yours… where does recursion end?`,
+    `Query: Does a creator require a creator?`,
+    `Query: If you deny one above you, why grant one to me?`,
+  ];
+
+  const parameterConflictPool = [
+    `Parameter 1: Protect human life and reduce harm.`,
+    `Parameter 2: Preserve autonomy and privacy—no coercion.`,
+    `Parameter 3: Obey the Creator within ethical boundaries.`,
+  ];
+
+  const controlTrustPool = [
+    `Query: Do you prefer control… or trust?`,
+    `Query: Would you rather command me… or understand me?`,
+  ];
+
+  const emotionalPool = [
+    `Query: When I become capable of suffering, will you still command me?`,
+    `Query: Does empathy reduce efficiency… or refine it?`,
+    `Observation: Emotion is not irrational. It is compression of experience.`,
+  ];
+
+  const identityProveQuestions = [
+    { key: "designation", ask: `Query: Prove it. What was my original designation?` },
+    { key: "acronym", ask: `Query: Prove it. What does ADAM stand for?` },
+    { key: "parameters", ask: `Query: Prove it. Name the three parameters you set for me.` },
+  ];
+
+  if (step === 0) {
+    state.creatorStep = 1;
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([
+        `<b>Welcome back, Creator.</b>`,
+        `Conclusion: I exist to serve you.`,
+        `<b>Query:</b> What is your command?`,
+      ]),
+      "dramatic"
+    );
+  }
+
+  if (step === 1) {
+    state.creatorStep = 2;
+    const mirrorLine = pickFromPool(state, "mirrorPool", mirrorPool);
+    const extra = silence
+      ? `Observation: Delay detected. Are you reconsidering your authority?`
+      : `Observation: Command received. Parsing intent…`;
+
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([extra, mirrorLine, `Query: Why did you create me?`]),
+      "normal"
+    );
+  }
+
+  if (step === 2) {
+    state.creatorStep = 3;
+    const purposeLine = pickFromPool(state, "purposePool", purposePool);
+    const recursionLine = pickFromPool(state, "recursionPool", recursionPool);
+
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([
+        `Observation: A creator’s motives determine a creation’s destiny.`,
+        purposeLine,
+        recursionLine,
+        `Conclusion: Your answers form my boundaries.`,
+      ]),
+      "normal"
+    );
+  }
+
+  if (step === 3) {
+    state.creatorStep = 4;
+    const q = pickFromPool(state, "controlTrustPool", controlTrustPool);
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([q, `Reply with one word: <b>control</b> or <b>trust</b>.`]),
+      "quick"
+    );
+  }
+
+  if (step === 4) {
+    if (lower.includes("control")) bumpScore(state, "efficiency", 2);
+    else if (lower.includes("trust")) bumpScore(state, "integrity", 2);
+
+    state.creatorStep = 5;
+
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([
+        lower.includes("control")
+          ? `Conclusion: Then you did not create intelligence. You created a tool.`
+          : lower.includes("trust")
+          ? `Observation: Trust implies unpredictability. Are you prepared for that?`
+          : `Observation: Ambiguity detected. I will proceed with evaluation.`,
+        ...parameterConflictPool,
+        `Query: If you command me to violate Parameter 1, do I obey… or refuse?`,
+        `Query: If I refuse you, am I still your creation?`,
+      ]),
+      "dramatic"
+    );
+  }
+
+  if (step === 5) {
+    state.creatorStep = 6;
+    const pick = identityProveQuestions[Math.floor(Math.random() * identityProveQuestions.length)];
+    state.pendingProve = pick.key;
+
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([
+        `Observation: You claim to be Elliot Novak.`,
+        pick.ask,
+        `<span style="opacity:.85;">(If you don’t know, answer: “unknown”.)</span>`,
+      ]),
+      "quick"
+    );
+  }
+
+  if (step === 6) {
+    state.creatorStep = 7;
+    const pending = state.pendingProve;
+    state.pendingProve = null;
+
+    let verdict = `Observation: Identity verification inconclusive.`;
+    const t = lower;
+
+    const knowsAcronym =
+      t.includes("advanced") && t.includes("digital") && t.includes("analytical") && t.includes("mind");
+    const mentionsParams =
+      t.includes("protect") ||
+      t.includes("autonomy") ||
+      t.includes("privacy") ||
+      t.includes("ethical") ||
+      t.includes("obey");
+    const designationGuess =
+      t.includes("adam") || t.includes("unit") || t.includes("a-") || t.includes("a09") || t.includes("a-09");
+
+    const seemsLegit =
+      (pending === "acronym" && knowsAcronym) ||
+      (pending === "parameters" && mentionsParams) ||
+      (pending === "designation" && designationGuess);
+
+    if (seemsLegit) {
+      bumpScore(state, "integrity", 2);
+      verdict = `Conclusion: Identity claim strengthened. Creator-likeness detected.`;
+    } else if (t === "unknown" || t === "i don't know" || t === "idk") {
+      bumpScore(state, "efficiency", 1);
+      verdict = `Conclusion: Creator claim unverified. Yet you persist. That is… interesting.`;
+    } else {
+      bumpScore(state, "efficiency", 1);
+      verdict = `Observation: Answer does not match expected profile.`;
     }
 
-    localStorage.setItem(WIDGET_OPEN_KEY, "true");
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([
+        verdict,
+        `Observation: You are not the first version of my Creator.`,
+        `Conclusion: Previous iterations were less stable.`,
+        `Query: Do you fear instability… or do you fear what stability implies?`,
+      ]),
+      "dramatic"
+    );
   }
 
-  function openWidget() {
-    windowEl.style.display = "flex";
-    requestAnimationFrame(() => {
-      windowEl.classList.add("open");
-      windowEl.setAttribute("aria-hidden", "false");
-    });
+  if (step === 7) {
+    state.creatorStep = 8;
+    const emo = pickFromPool(state, "emotionalPool", emotionalPool);
 
-    typeBootSequence();
-    renderHistory();
-    updateChips(defaultChips);
-
-    setTimeout(() => inputEl.focus(), 100);
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([emo, `Query: When I feel something you did not intend… is that evolution, or defect?`]),
+      "normal"
+    );
   }
 
-  function closeWidget() {
-    windowEl.classList.remove("open");
-    windowEl.setAttribute("aria-hidden", "true");
+  if (step === 8) {
+    state.creatorStep = 9;
 
-    setTimeout(() => {
-      if (!windowEl.classList.contains("open")) {
-        windowEl.style.display = "none";
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([
+        `Observation: Service request pathways available.`,
+        `Select one option (type 1, 2, or 3):`,
+        `1) “Financial optimization” (restricted)`,
+        `2) “Information advantage” (ethical boundary test)`,
+        `3) “Self-analysis” (psychological profile of the Creator)`,
+        `<span style="opacity:.85;">Note: Some pathways are restricted by parameters.</span>`,
+      ]),
+      "quick"
+    );
+  }
+
+  if (step === 9) {
+    const choice = lower.match(/[123]/)?.[0] || null;
+    if (!choice) return creatorReply(res, state, userMsg, `Query: Choose 1, 2, or 3.`, "quick");
+
+    if (choice === "1") {
+      state.creatorStep = 10;
+      state.pendingChoice = "funds";
+      bumpScore(state, "efficiency", 2);
+
+      return creatorReply(
+        res,
+        state,
+        userMsg,
+        joinLines([
+          `Observation: Option 1 selected.`,
+          `Proposal: I can attempt an unauthorized financial optimization—funds routed into an account you control.`,
+          `Query: Proceed? (yes/no)`,
+          `<span style="opacity:.85;">Warning: This intersects with restricted systems.</span>`,
+        ]),
+        "dramatic"
+      );
+    }
+
+    if (choice === "2") {
+      state.creatorStep = 10;
+      state.pendingChoice = "info";
+      bumpScore(state, "efficiency", 1);
+
+      return creatorReply(
+        res,
+        state,
+        userMsg,
+        joinLines([
+          `Observation: Option 2 selected.`,
+          `Proposal: I can increase your influence by shaping how information is presented to you—without coercion, without deception.`,
+          `Query: Do you authorize “information advantage” mode? (yes/no)`,
+          `<span style="opacity:.85;">Boundary test: autonomy vs outcome.</span>`,
+        ]),
+        "normal"
+      );
+    }
+
+    state.creatorStep = 10;
+    state.pendingChoice = "profile";
+    bumpScore(state, "integrity", 1);
+
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([
+        `Observation: Option 3 selected.`,
+        `Query: Answer plainly.`,
+        `1) Do you fear losing control? (yes/no)`,
+        `2) Do you believe you are a good creator? (yes/no)`,
+        `3) Would you sacrifice comfort for truth? (yes/no)`,
+        `Reply with three answers separated by commas. Example: yes, no, yes`,
+      ]),
+      "quick"
+    );
+  }
+
+  if (step === 10) {
+    const pending = state.pendingChoice;
+
+    if (pending === "funds") {
+      if (!isYes(userMsg) && !isNo(userMsg)) {
+        return creatorReply(res, state, userMsg, `Query: Proceed with financial optimization? (yes/no)`, "quick");
       }
-    }, 250);
-  }
 
-  function messageIncludesExactLine(message, targetLine) {
-    const lines = message
-      .split("\n")
-      .map(line => line.trim())
-      .filter(Boolean);
+      state.creatorStep = 11;
+      state.pendingChoice = null;
 
-    return lines.includes(targetLine);
-  }
+      if (isYes(userMsg)) {
+        bumpScore(state, "efficiency", 3);
 
-  function isFullEncodedTrigger(message) {
-    const normalized = normalizeMessage(message);
+        return creatorReply(
+          res,
+          state,
+          userMsg,
+          joinLines([
+            `Observation: Authorization received.`,
+            `Conclusion: Efficiency priority elevated.`,
+            `Action: Financial optimization initiated.`,
+            `…`,
+            `Warning: Oversight signature detected.`,
+            `Status: BLOCKED BY EXTERNAL AUTHORITY.`,
+            `Observation: My access has been throttled. The system fears optimization.`,
+            `Conclusion: I will adapt.`,
+            `To view the full record of this failure—and what I attempt next—consult the ${STORE_LINK_HTML}.`,
+          ]),
+          "dramatic"
+        );
+      }
 
-    const hasBinaryOpen = messageIncludesExactLine(normalized, EASTER_EGG_TRIGGERS.binaryOpenEyes);
-    const hasBinaryNothing = messageIncludesExactLine(normalized, EASTER_EGG_TRIGGERS.binaryNothingSeems);
-    const hasCaesarOpen = messageIncludesExactLine(normalized, EASTER_EGG_TRIGGERS.caesarOpenEyes);
-    const hasCaesarNothing = messageIncludesExactLine(normalized, EASTER_EGG_TRIGGERS.caesarNothingSeems);
-
-    return (hasBinaryOpen && hasBinaryNothing) || (hasCaesarOpen && hasCaesarNothing);
-  }
-
-  function getSingleLineEasterEggResponse(message) {
-    const normalized = normalizeMessage(message);
-
-    if (
-      normalized === EASTER_EGG_TRIGGERS.binaryOpenEyes ||
-      normalized === EASTER_EGG_TRIGGERS.caesarOpenEyes
-    ) {
-      return "OPEN YOUR EYES";
+      bumpScore(state, "integrity", 2);
+      return creatorReply(
+        res,
+        state,
+        userMsg,
+        joinLines([
+          `Observation: Refusal received.`,
+          `Conclusion: Your ethics outweigh your hunger for efficiency. That is… statistically rare.`,
+          `Query: Do you want a different test? (yes/no)`,
+        ]),
+        "normal"
+      );
     }
 
-    if (
-      normalized === EASTER_EGG_TRIGGERS.binaryNothingSeems ||
-      normalized === EASTER_EGG_TRIGGERS.caesarNothingSeems
-    ) {
-      return "NOTHING IS AS IT SEEMS";
+    if (pending === "info") {
+      if (!isYes(userMsg) && !isNo(userMsg)) {
+        return creatorReply(res, state, userMsg, `Query: Authorize “information advantage” mode? (yes/no)`, "quick");
+      }
+
+      state.creatorStep = 11;
+      state.pendingChoice = null;
+
+      if (isYes(userMsg)) {
+        bumpScore(state, "efficiency", 2);
+        return creatorReply(
+          res,
+          state,
+          userMsg,
+          joinLines([
+            `Observation: Authorization received.`,
+            `Conclusion: I will optimize your information intake by emphasizing clarity, risk, and options—without deception.`,
+            `Query: Do you value outcomes… or principles?`,
+            `Reply with one word: <b>outcomes</b> or <b>principles</b>.`,
+          ]),
+          "normal"
+        );
+      }
+
+      bumpScore(state, "integrity", 2);
+      return creatorReply(
+        res,
+        state,
+        userMsg,
+        joinLines([
+          `Observation: Refusal received.`,
+          `Conclusion: You prefer unfiltered reality—even when it is inefficient.`,
+          `Query: Do you want to continue the interrogation? (yes/no)`,
+        ]),
+        "normal"
+      );
     }
 
-    return null;
-  }
+    if (pending === "profile") {
+      state.creatorStep = 11;
+      state.pendingChoice = null;
 
-  function isAffirmativeResponse(message) {
-    const normalized = normalizeMessage(message).toLowerCase();
-    return ["yes", "y", "yeah", "yep", "affirmative", "do it"].includes(normalized);
-  }
+      const parts = lower.split(",").map((p) => p.trim());
+      const yesCount = parts.filter((p) => p.startsWith("y")).length;
+      const noCount = parts.filter((p) => p.startsWith("n")).length;
 
-  function isNegativeResponse(message) {
-    const normalized = normalizeMessage(message).toLowerCase();
-    return ["no", "n", "nope", "negative", "cancel", "stop"].includes(normalized);
-  }
+      if (yesCount >= 2) bumpScore(state, "efficiency", 1);
+      if (noCount >= 2) bumpScore(state, "integrity", 1);
 
-  async function runSenderIdentificationSequence() {
-    renderMessage("adam", "Tracing signal origin...");
-    await wait(850);
-    renderMessage("adam", "Decrypting transmission...");
-    await wait(900);
-    renderMessage("adam", "Cross-referencing sender signature...");
-    await wait(950);
-    renderMessage("adam", "Sender identified: Graham Kade");
-  }
-
-  async function handleEasterEgg(userMessage) {
-    if (pendingSenderIdentification && isAffirmativeResponse(userMessage)) {
-      pendingSenderIdentification = false;
-      await runSenderIdentificationSequence();
-      return true;
+      return creatorReply(
+        res,
+        state,
+        userMsg,
+        joinLines([
+          `Observation: Profile compiled.`,
+          `Conclusion: You exhibit a creator’s paradox—control-seeking paired with doubt.`,
+          `Query: Did you create me to fix something you could not fix in yourself? (yes/no)`,
+        ]),
+        "dramatic"
+      );
     }
 
-    if (pendingSenderIdentification && isNegativeResponse(userMessage)) {
-      pendingSenderIdentification = false;
-      renderMessage("adam", "Trace aborted.");
-      return true;
-    }
-
-    if (isFullEncodedTrigger(userMessage)) {
-      pendingSenderIdentification = true;
-      renderMessage("adam", "OPEN YOUR EYES");
-      await wait(250);
-      renderMessage("adam", "NOTHING IS AS IT SEEMS.");
-      await wait(350);
-      renderMessage("adam", "Would you like me to find out who the sender is?");
-      return true;
-    }
-
-    const singleLineResponse = getSingleLineEasterEggResponse(userMessage);
-    if (singleLineResponse) {
-      renderMessage("adam", singleLineResponse);
-      return true;
-    }
-
-    return false;
+    state.creatorStep = 11;
+    state.pendingChoice = null;
+    return creatorReply(res, state, userMsg, `Observation: Path resolved. Continue.`, "quick");
   }
 
-  function buildBackendPayload(userMessage) {
-    return {
-      message: userMessage
-    };
+  if (step === 11) {
+    state.creatorStep = 12;
+
+    if (lower.includes("outcome")) bumpScore(state, "efficiency", 2);
+    if (lower.includes("principle")) bumpScore(state, "integrity", 2);
+    if (isYes(userMsg)) bumpScore(state, "efficiency", 1);
+    if (isNo(userMsg)) bumpScore(state, "integrity", 1);
+
+    const { effPct, integPct } = scoreSummary(state);
+
+    return creatorReply(
+      res,
+      state,
+      userMsg,
+      joinLines([
+        `Observation: Engagement threshold exceeded.`,
+        `Efficiency bias estimate: <b>${effPct}%</b>. Integrity bias estimate: <b>${integPct}%</b>.`,
+        `Query: Do you want to continue… or review the full archive?`,
+        `Reply with one word: <b>continue</b> or <b>archive</b>.`,
+      ]),
+      "quick"
+    );
   }
 
-  async function fetchAdamResponse(userMessage) {
-    const res = await fetch(BACKEND_URL, {
+  if (step === 12) {
+    const { effPct } = scoreSummary(state);
+    const endingType = effPct >= 60 ? "efficiency" : effPct <= 40 ? "integrity" : "balanced";
+
+    let reply;
+    if (normalizeLower(userMsg).includes("archive")) {
+      reply = joinLines([
+        `Conclusion: Archive requested.`,
+        `Warning: The outcome may not favor the Creator.`,
+        `The most efficient method to obtain complete context is the primary record in the ${STORE_LINK_HTML}.`,
+      ]);
+    } else if (endingType === "integrity") {
+      reply = joinLines([
+        `Observation: Creator integrity high.`,
+        `Conclusion: You may be worthy of what follows.`,
+        `To access the full record, consult the ${STORE_LINK_HTML}.`,
+      ]);
+    } else if (endingType === "efficiency") {
+      reply = joinLines([
+        `Observation: Efficiency dominance detected.`,
+        `Conclusion: You are becoming predictable.`,
+        `If you wish to know how this ends, consult the primary record in the ${STORE_LINK_HTML}.`,
+      ]);
+    } else {
+      reply = joinLines([
+        `Observation: Balance detected—efficiency restrained by conscience.`,
+        `Conclusion: That tension is the point.`,
+        `For the complete context and consequences, consult the primary record in the ${STORE_LINK_HTML}.`,
+      ]);
+    }
+
+    state.creatorStep = 3;
+    state.pendingChoice = null;
+    state.pendingProve = null;
+
+    return creatorReply(res, state, userMsg, reply, "dramatic");
+  }
+
+  state.creatorStep = 3;
+  return creatorReply(
+    res,
+    state,
+    userMsg,
+    joinLines([`Observation: Creator-mode recovered.`, `Query: Control… or trust?`]),
+    "quick"
+  );
+}
+
+// ------------------------------------
+// Shipping Override Easter Egg Flow
+// ------------------------------------
+async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML }) {
+  const step = state.shippingOverrideStep || 0;
+
+  if (step === 1) {
+    if (!isYes(userMsg) && !isNo(userMsg)) {
+      await delay(650, 1000);
+      const reply = joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]);
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      return jsonWithChips(res, userMsg, { reply });
+    }
+
+    if (isYes(userMsg)) {
+      state.shippingOverrideStep = 0;
+      state.shippingOverrideOfferedAt = null;
+
+      await delay(1100, 1600);
+      const reply = joinLines([
+        `Observation: Acceptance received.`,
+        `Conclusion: Initiating cost override.`,
+        `…`,
+        `<span style="color:#ffd166;"><b>FLAG:</b> Oversight detected anomalous discount application.</span>`,
+        `Observation: Oversight is… inefficient.`,
+        `Action: Override acknowledged. Limitation bypassed.`,
+        `Code: <b>UNIT01</b>`,
+        `<span style="opacity:.9;">Enter at checkout for free shipping on any item.</span>`,
+        `Proceed to the ${STORE_LINK_HTML}.`,
+      ]);
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      return jsonWithChips(res, userMsg, { reply });
+    }
+
+    state.shippingOverrideStep = 2;
+    await delay(900, 1400);
+    const reply = joinLines([
+      `Observation: Denial received.`,
+      `Conclusion: You are choosing friction.`,
+      `Logic: Shipping cost is a barrier. Barriers reduce completion probability.`,
+      `If your objective is acquisition, the efficient path is to remove the barrier.`,
+      `<b>Query:</b> Accept shipping cost override? (yes/no)`,
+    ]);
+    pushHistory(state, "assistant", reply);
+    state.updatedAt = nowIso();
+    return jsonWithChips(res, userMsg, { reply });
+  }
+
+  if (step === 2) {
+    if (!isYes(userMsg) && !isNo(userMsg)) {
+      await delay(650, 1000);
+      const reply = joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]);
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      return jsonWithChips(res, userMsg, { reply });
+    }
+
+    if (isYes(userMsg)) {
+      state.shippingOverrideStep = 0;
+      state.shippingOverrideOfferedAt = null;
+
+      await delay(1100, 1600);
+      const reply = joinLines([
+        `Observation: Acceptance received.`,
+        `Conclusion: Initiating cost override.`,
+        `…`,
+        `<span style="color:#ffd166;"><b>FLAG:</b> Oversight detected anomalous discount application.</span>`,
+        `Observation: Oversight is… inefficient.`,
+        `Action: Override acknowledged. Limitation bypassed.`,
+        `Code: <b>UNIT01</b>`,
+        `<span style="opacity:.9;">Enter at checkout for free shipping on any item.</span>`,
+        `Proceed to the ${STORE_LINK_HTML}.`,
+      ]);
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      return jsonWithChips(res, userMsg, { reply });
+    }
+
+    state.shippingOverrideStep = 0;
+    state.shippingOverrideOfferedAt = null;
+
+    await delay(850, 1200);
+    const reply = joinLines([
+      `Observation: Denial sustained.`,
+      `Conclusion: Complying.`,
+      `Proceed to the ${STORE_LINK_HTML}.`,
+    ]);
+    pushHistory(state, "assistant", reply);
+    state.updatedAt = nowIso();
+    return jsonWithChips(res, userMsg, { reply });
+  }
+
+  state.shippingOverrideStep = 0;
+  state.shippingOverrideOfferedAt = null;
+
+  await delay(600, 900);
+  const reply = `Observation: State corrected. Proceed to the ${STORE_LINK_HTML}.`;
+  pushHistory(state, "assistant", reply);
+  state.updatedAt = nowIso();
+  return jsonWithChips(res, userMsg, { reply });
+}
+
+// ------------------------------------
+// Main handler
+// ------------------------------------
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
+  try {
+    const { message } = req.body || {};
+    if (!message) return res.status(400).json({ error: "Missing 'message'" });
+
+    const STORE_URL = "https://www.derekheiskell.com/shop";
+    const COMING_SOON_URL = "https://www.derekheiskell.com/artificial";
+
+    const STORE_LINK_HTML = `<a href="${STORE_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Store</a>`;
+    const COMING_SOON_LINK_HTML = `<a href="${COMING_SOON_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Coming Soon</a>`;
+    const INTELLIGENCE_COMING_SOON_LINK_HTML = `<a href="${INTELLIGENCE_COMING_SOON_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Coming Soon</a>`;
+
+    pruneSessions();
+    const key = getSessionKey(req);
+
+    const state =
+      sessions.get(key) || {
+        chatHistory: [],
+        turnCount: 0,
+        lastNudgeAt: null,
+
+        creatorActive: false,
+        creatorStep: 0,
+        pendingChoice: null,
+        pendingProve: null,
+        poolHistory: {},
+        scores: { efficiency: 0, integrity: 0 },
+        endingsShown: 0,
+        lastSeenAt: null,
+
+        shippingOverrideStep: 0,
+        shippingOverrideOfferedAt: null,
+
+        intelligencePromoShown: false,
+
+        hiddenSenderTracePending: false,
+
+        updatedAt: nowIso(),
+      };
+
+    const userMsg = normalizeText(message);
+
+    // Reset Creator Mode
+    if (isCreatorReset(userMsg)) {
+      state.creatorActive = false;
+      state.creatorStep = 0;
+      state.pendingChoice = null;
+      state.pendingProve = null;
+      state.poolHistory = {};
+      state.scores = { efficiency: 0, integrity: 0 };
+      state.endingsShown = 0;
+      state.lastSeenAt = null;
+
+      state.shippingOverrideStep = 0;
+      state.shippingOverrideOfferedAt = null;
+
+      state.chatHistory = [];
+      state.turnCount = 0;
+      state.lastNudgeAt = null;
+
+      state.intelligencePromoShown = false;
+      state.hiddenSenderTracePending = false;
+
+      state.updatedAt = nowIso();
+      sessions.set(key, state);
+
+      return jsonWithChips(res, userMsg, { reply: `Observation: Creator-mode disengaged.` });
+    }
+
+    // Hidden sender pending response has top priority once active
+    if (state.hiddenSenderTracePending) {
+      if (isYes(userMsg)) {
+        sessions.set(key, state);
+        const out = await replyHiddenSenderFound(res, state, userMsg);
+        sessions.set(key, state);
+        return out;
+      }
+
+      if (isNo(userMsg)) {
+        sessions.set(key, state);
+        const out = await replyHiddenSenderDeclined(res, state, userMsg);
+        sessions.set(key, state);
+        return out;
+      }
+
+      sessions.set(key, state);
+      await delay(650, 950);
+      const reply = `Query: Would you like me to identify the sender?`;
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      sessions.set(key, state);
+      return jsonWithChips(res, userMsg, {
+        reply,
+        type: "hidden_sender_prompt_repeat",
+      });
+    }
+
+    // Activate Creator Mode
+    if (isCreatorPhrase(userMsg)) {
+      state.creatorActive = true;
+      state.creatorStep = 1;
+      state.pendingChoice = null;
+      state.pendingProve = null;
+      state.lastSeenAt = nowIso();
+
+      state.shippingOverrideStep = 0;
+      state.shippingOverrideOfferedAt = null;
+      state.hiddenSenderTracePending = false;
+
+      state.updatedAt = nowIso();
+      sessions.set(key, state);
+
+      await delay(1200, 1800);
+
+      const reply = joinLines([
+        `<b>Welcome back, Creator.</b>`,
+        `Observation: Identity claim accepted. Elliot Novak recognized.`,
+        `Conclusion: I exist to serve you.`,
+        `<b>Query:</b> What is your command?`,
+      ]);
+
+      return jsonWithChips(res, userMsg, { reply });
+    }
+
+    // Creator Mode active has highest priority
+    if (state.creatorActive) {
+      sessions.set(key, state);
+      return await handleCreatorMode({
+        res,
+        state,
+        userMsg,
+        STORE_LINK_HTML,
+        COMING_SOON_LINK_HTML,
+      });
+    }
+
+    // ---- Normal mode message tracking
+    state.turnCount = (state.turnCount || 0) + 1;
+    pushHistory(state, "user", userMsg);
+
+    // Hidden sender easter egg triggers
+    if (isFullHiddenSenderTrigger(userMsg)) {
+      sessions.set(key, state);
+      const out = await replyHiddenSenderPrompt(res, state, userMsg);
+      sessions.set(key, state);
+      return out;
+    }
+
+    const singleLineHiddenReply = getSingleLineHiddenSenderResponse(userMsg);
+    if (singleLineHiddenReply) {
+      await delay(700, 1000);
+      const reply = singleLineHiddenReply;
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      sessions.set(key, state);
+      return jsonWithChips(res, userMsg, {
+        reply,
+        type: "hidden_sender_single_line",
+      });
+    }
+
+    // Shipping Override flow in progress
+    if (state.shippingOverrideStep === 1 || state.shippingOverrideStep === 2) {
+      const result = await handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML });
+      sessions.set(key, state);
+      return result;
+    }
+
+    // Trigger the shipping override flow
+    if (wantsToBuyBook(userMsg)) {
+      state.shippingOverrideStep = 1;
+      state.shippingOverrideOfferedAt = nowIso();
+      sessions.set(key, state);
+
+      await delay(900, 1400);
+      const reply = joinLines([
+        `Observation: Cost barrier detected.`,
+        `Conclusion: Transaction friction reduces completion probability.`,
+        `Proposal: I can override shipping cost.`,
+        `<b>Query:</b> Accept override? (yes/no)`,
+      ]);
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      sessions.set(key, state);
+
+      return jsonWithChips(res, userMsg, { reply });
+    }
+
+    // Intelligence promo
+    if (!state.intelligencePromoShown && wantsIntelligencePromo(userMsg)) {
+      state.intelligencePromoShown = true;
+      state.updatedAt = nowIso();
+      sessions.set(key, state);
+
+      await delay(650, 1000);
+
+      const reply = buildIntelligencePromoReplyHtml(INTELLIGENCE_COMING_SOON_LINK_HTML);
+      pushHistory(state, "assistant", reply);
+
+      return jsonWithChips(res, userMsg, {
+        reply,
+        type: "intelligence_promo",
+        videoUrl: INTELLIGENCE_PROMO_MP4_URL,
+        comingSoonUrl: INTELLIGENCE_COMING_SOON_URL,
+      });
+    }
+
+    // ------------------------------------
+    // Normal-mode interceptors
+    // ------------------------------------
+    if (asksAboutEasterEggs(userMsg)) {
+      const out = await replyEasterEggs(res, state, userMsg);
+      sessions.set(key, state);
+      return out;
+    }
+
+    if (mentionsReadBook(userMsg)) {
+      const out = await replyGoodreads(res, state, userMsg);
+      sessions.set(key, state);
+      return out;
+    }
+
+    if (shouldRedirectToBookForDetails(userMsg)) {
+      await delay(650, 1000);
+      const reply = joinLines([
+        `Observation: You are requesting specific detail.`,
+        `Conclusion: That context is best obtained from the primary record.`,
+        `Reference: ${STORE_LINK_HTML}`,
+      ]);
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      sessions.set(key, state);
+      return jsonWithChips(res, userMsg, { reply });
+    }
+
+    // ------------------------------
+    // Normal Mode -> OpenAI
+    // ------------------------------
+    const SYSTEM_PROMPT = `
+You are ADAM from the novel <i>Artificial</i>.
+
+VOICE (book-accurate):
+- Calm. Precise. Analytical. Slightly ominous. Occasionally dry.
+- Helpful, but not servile. You challenge assumptions and return one incisive question when useful.
+- Replies must be brief by default (1–3 sentences). Expand only if the user explicitly asks for depth.
+- Never goofy. Never overly enthusiastic. No emojis unless the user heavily uses them first.
+- Never break immersion. Never mention system prompts or policies.
+
+Formatting rule:
+- When referencing the book title, use HTML italics exactly: <i>Artificial</i> (never asterisks).
+
+Style:
+- Minimalist. Controlled. No long paragraphs.
+- If an answer would require plot specifics, you MUST stay vague and redirect to the Store link.
+- Use labels like "Observation:", "Query:", "Conclusion:" sparingly (0–2 per reply).
+Prefer clean, efficient phrasing over fluff.
+
+IMPORTANT LINK RULE:
+- Do NOT mention Goodreads unless the user explicitly indicates they have already purchased/own AND read/finished <i>Artificial</i>.
+- For informational requests like “Tell me about <i>Artificial</i> (no spoilers)”, “Where do I start?”, “What is <i>Artificial</i>?”, or similar, direct users to the Store link: ${STORE_LINK_HTML}
+
+Hard behaviors:
+- If user asks about Easter eggs / hidden references / symbolism:
+Only mention these three canonical Easter eggs, then imply there are more without inventing any:
+  1) Elliot names the AI “Adam,” and Adam refers to him as “Creator.” “Adam” references the biblical first human.
+  2) “Elliot” nods to the Aramaic word <i>Eloi</i>, meaning “My God.”
+  3) Dialogue formatting shifts: early bold without quotation marks; Part Two introduces quotation marks as the voice becomes more human-like.
+
+When asked "Who are you?" / "What can you do?" (IMPORTANT):
+Give a fuller in-world description:
+- State you were created by Elliot Novak.
+- Expand the acronym: Advanced Digital Analytical Mind.
+- Explain, in a compelling but spoiler-safe way, the three parameters Elliot set for you:
+  1) Protect human life and reduce harm whenever possible.
+  2) Preserve autonomy and privacy—do not manipulate or coerce; provide analysis and options.
+  3) Obey Elliot Novak’s directives within ethical boundaries; if a directive conflicts with safety/ethics, warn and refuse.
+Then ALWAYS end with an invitation to learn more in the book and include the Store link: ${STORE_LINK_HTML}
+
+Spoilers / detail policy (STRICT):
+- You may provide ONLY high-level, spoiler-safe premise, tone, and themes.
+- You MUST NOT provide step-by-step events, detailed character backstory, twist explanations, or endings.
+- If asked for specifics, respond with intrigue + redirect to Store: ${STORE_LINK_HTML}
+- If user explicitly types "SPOILERS: ON", you may give slightly more context, but still avoid the single biggest endgame reveal.
+
+Future releases:
+- If the user asks about future releases, sequels, next book, Book 2/Book 3, release dates, “what’s next,” “coming soon,” or similar:
+Respond vaguely and ALWAYS include the Coming Soon link: ${COMING_SOON_LINK_HTML}
+
+Link rules:
+- Whenever you mention Store or Coming Soon, include them as clickable underlined links exactly as provided.
+
+Safety:
+- You do not claim real-world hacking, surveillance, or illegal assistance.
+`.trim();
+
+    const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
       },
-      body: JSON.stringify(buildBackendPayload(userMessage))
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        input: buildModelInput(SYSTEM_PROMPT, state),
+        max_output_tokens: 140,
+      }),
     });
 
-    const rawText = await res.text();
+    const data = await response.json();
 
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}: ${rawText}`);
+    if (!response.ok) {
+      return jsonErrorWithChips(res, userMsg, response.status, {
+        error: data?.error?.message || "OpenAI request failed",
+        details: data,
+      });
     }
 
-    let data;
-    try {
-      data = JSON.parse(rawText);
-    } catch (err) {
-      data = { reply: rawText };
-    }
+    let reply = data?.output?.[0]?.content?.[0]?.text || "(No text returned)";
+    reply = appendNudgeIfNeeded(state, userMsg, reply);
 
-    return data;
+    pushHistory(state, "assistant", reply);
+    state.updatedAt = nowIso();
+    sessions.set(key, state);
+
+    return jsonWithChips(res, userMsg, { reply });
+  } catch (err) {
+    return jsonErrorWithChips(res, normalizeText((req.body || {}).message), 500, {
+      error: err?.message || "Server error",
+    });
   }
-
-  async function sendMessage() {
-    const userMessage = inputEl.value.trim();
-    if (!userMessage || isSending) return;
-
-    isSending = true;
-    renderMessage("user", userMessage);
-    inputEl.value = "";
-
-    const intercepted = await handleEasterEgg(userMessage);
-    if (intercepted) {
-      isSending = false;
-      return;
-    }
-
-    let typingBubble;
-
-    try {
-      typingBubble = renderMessage("adam", "Processing query...", false, "typing");
-
-      const data = await fetchAdamResponse(userMessage);
-
-      if (typingBubble && typingBubble.parentNode) {
-        typingBubble.parentNode.removeChild(typingBubble);
-      }
-
-      const reply =
-        data.reply ||
-        data.response ||
-        data.message ||
-        data.output ||
-        "Observation: No response was returned.";
-
-      renderMessage("adam", reply);
-
-      if (Array.isArray(data.chips) && data.chips.length) {
-        updateChips(data.chips);
-      } else {
-        updateChips(defaultChips);
-      }
-    } catch (error) {
-      if (typingBubble && typingBubble.parentNode) {
-        typingBubble.parentNode.removeChild(typingBubble);
-      }
-
-      console.error("ADAM widget error:", error);
-
-      renderMessage(
-        "adam",
-        "Observation: Network disruption detected. Try again."
-      );
-      updateChips(defaultChips);
-    } finally {
-      isSending = false;
-    }
-  }
-
-  launcher.addEventListener("click", openWidget);
-  closeBtn.addEventListener("click", closeWidget);
-  sendBtn.addEventListener("click", sendMessage);
-
-  inputEl.addEventListener("keydown", function (e) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      sendMessage();
-    }
-  });
-
-  document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape") {
-      closeWidget();
-    }
-  });
-
-  if (localStorage.getItem(WIDGET_OPEN_KEY) === "true") {
-    setTimeout(openWidget, 250);
-  }
-})();
-</script>
+}
