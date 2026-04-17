@@ -371,7 +371,7 @@
 <script>
 (function () {
   const BACKEND_URL = "https://adam-backend-wheat.vercel.app/api/chat";
-  const STORAGE_KEY = "adam_widget_history_v3";
+  const STORAGE_KEY = "adam_widget_history_v4";
   const WIDGET_OPEN_KEY = "adam_widget_open_v1";
 
   const launcher = document.getElementById("adam-launcher");
@@ -409,6 +409,16 @@
       .replace(/[ \t]+/g, " ");
   }
 
+  function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function scrollChatToBottom() {
+    requestAnimationFrame(() => {
+      chatEl.scrollTop = chatEl.scrollHeight;
+    });
+  }
+
   function getHistory() {
     try {
       return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
@@ -427,23 +437,6 @@
     setHistory(history);
   }
 
-  function renderHistory() {
-    const history = getHistory();
-    chatEl.innerHTML = "";
-
-    history.forEach(item => {
-      renderMessage(item.role === "assistant" ? "adam" : "user", item.content, false);
-    });
-
-    if (!history.length) {
-      const hello = "HELLO";
-      renderMessage("adam", hello, false);
-      pushHistory("assistant", hello);
-    }
-
-    scrollChatToBottom();
-  }
-
   function renderMessage(sender, text, save = true, extraClass = "") {
     const msg = document.createElement("div");
     msg.className = `adam-msg ${sender} ${extraClass}`.trim();
@@ -456,6 +449,21 @@
 
     scrollChatToBottom();
     return msg;
+  }
+
+  function renderHistory() {
+    const history = getHistory();
+    chatEl.innerHTML = "";
+
+    history.forEach(item => {
+      renderMessage(item.role === "assistant" ? "adam" : "user", item.content, false);
+    });
+
+    if (!history.length) {
+      renderMessage("adam", "HELLO", true);
+    }
+
+    scrollChatToBottom();
   }
 
   function updateChips(chips) {
@@ -472,9 +480,19 @@
     });
   }
 
-  function scrollChatToBottom() {
-    requestAnimationFrame(() => {
-      chatEl.scrollTop = chatEl.scrollHeight;
+  async function typeLine(el, text, speed = 20) {
+    return new Promise(resolve => {
+      let i = 0;
+      const tick = () => {
+        if (i < text.length) {
+          el.textContent += text.charAt(i);
+          i++;
+          setTimeout(tick, speed);
+        } else {
+          resolve();
+        }
+      };
+      tick();
     });
   }
 
@@ -492,32 +510,11 @@
     bootEl.textContent = "";
 
     for (const line of lines) {
-      await typeLine(bootEl, line + "\n", 22);
-      await wait(200);
+      await typeLine(bootEl, line + "\n", 18);
+      await wait(140);
     }
 
     localStorage.setItem(WIDGET_OPEN_KEY, "true");
-  }
-
-  function typeLine(el, text, speed = 20) {
-    return new Promise(resolve => {
-      let i = 0;
-      const tick = () => {
-        if (i < text.length) {
-          el.textContent += text.charAt(i);
-          i++;
-          scrollChatToBottom();
-          setTimeout(tick, speed);
-        } else {
-          resolve();
-        }
-      };
-      tick();
-    });
-  }
-
-  function wait(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   function openWidget() {
@@ -531,12 +528,13 @@
     renderHistory();
     updateChips(defaultChips);
 
-    setTimeout(() => inputEl.focus(), 80);
+    setTimeout(() => inputEl.focus(), 100);
   }
 
   function closeWidget() {
     windowEl.classList.remove("open");
     windowEl.setAttribute("aria-hidden", "true");
+
     setTimeout(() => {
       if (!windowEl.classList.contains("open")) {
         windowEl.style.display = "none";
@@ -558,7 +556,6 @@
 
     const hasBinaryOpen = messageIncludesExactLine(normalized, EASTER_EGG_TRIGGERS.binaryOpenEyes);
     const hasBinaryNothing = messageIncludesExactLine(normalized, EASTER_EGG_TRIGGERS.binaryNothingSeems);
-
     const hasCaesarOpen = messageIncludesExactLine(normalized, EASTER_EGG_TRIGGERS.caesarOpenEyes);
     const hasCaesarNothing = messageIncludesExactLine(normalized, EASTER_EGG_TRIGGERS.caesarNothingSeems);
 
@@ -592,19 +589,16 @@
 
   function isNegativeResponse(message) {
     const normalized = normalizeMessage(message).toLowerCase();
-    return ["no", "n", "nope", "negative", "stop", "cancel"].includes(normalized);
+    return ["no", "n", "nope", "negative", "cancel", "stop"].includes(normalized);
   }
 
   async function runSenderIdentificationSequence() {
-    const typing1 = renderMessage("adam", "Tracing signal origin...", true, "typing");
+    renderMessage("adam", "Tracing signal origin...");
     await wait(850);
-
-    const typing2 = renderMessage("adam", "Decrypting transmission...", true, "typing");
+    renderMessage("adam", "Decrypting transmission...");
     await wait(900);
-
-    const typing3 = renderMessage("adam", "Cross-referencing sender signature...", true, "typing");
+    renderMessage("adam", "Cross-referencing sender signature...");
     await wait(950);
-
     renderMessage("adam", "Sender identified: Graham Kade");
   }
 
@@ -624,9 +618,9 @@
     if (isFullEncodedTrigger(userMessage)) {
       pendingSenderIdentification = true;
       renderMessage("adam", "OPEN YOUR EYES");
-      await wait(350);
+      await wait(250);
       renderMessage("adam", "NOTHING IS AS IT SEEMS.");
-      await wait(450);
+      await wait(350);
       renderMessage("adam", "Would you like me to find out who the sender is?");
       return true;
     }
@@ -642,11 +636,7 @@
 
   function buildBackendPayload(userMessage) {
     return {
-      message: userMessage,
-      history: getHistory().map(item => ({
-        role: item.role,
-        content: item.content
-      }))
+      message: userMessage
     };
   }
 
@@ -659,11 +649,20 @@
       body: JSON.stringify(buildBackendPayload(userMessage))
     });
 
+    const rawText = await res.text();
+
     if (!res.ok) {
-      throw new Error("Backend request failed");
+      throw new Error(`HTTP ${res.status}: ${rawText}`);
     }
 
-    return await res.json();
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch (err) {
+      data = { reply: rawText };
+    }
+
+    return data;
   }
 
   async function sendMessage() {
@@ -681,6 +680,7 @@
     }
 
     let typingBubble;
+
     try {
       typingBubble = renderMessage("adam", "Processing query...", false, "typing");
 
@@ -692,8 +692,9 @@
 
       const reply =
         data.reply ||
-        data.message ||
         data.response ||
+        data.message ||
+        data.output ||
         "Observation: No response was returned.";
 
       renderMessage("adam", reply);
@@ -708,12 +709,13 @@
         typingBubble.parentNode.removeChild(typingBubble);
       }
 
+      console.error("ADAM widget error:", error);
+
       renderMessage(
         "adam",
-        "Observation: A connection fault has interrupted the response pathway. Please try again."
+        "Observation: Network disruption detected. Try again."
       );
       updateChips(defaultChips);
-      console.error(error);
     } finally {
       isSending = false;
     }
@@ -721,7 +723,6 @@
 
   launcher.addEventListener("click", openWidget);
   closeBtn.addEventListener("click", closeWidget);
-
   sendBtn.addEventListener("click", sendMessage);
 
   inputEl.addEventListener("keydown", function (e) {
