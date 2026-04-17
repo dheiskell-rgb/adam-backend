@@ -1478,7 +1478,18 @@ export default async function handler(req, res) {
       return jsonWithChips(res, userMsg, { reply: `Observation: Creator-mode disengaged.` });
     }
 
-    // Hidden sender pending response has top priority once active
+    // New encoded input should ALWAYS restart the sequence
+    if (containsAnyHiddenSenderTrigger(userMsg)) {
+      state.hiddenSenderTracePending = true;
+      state.updatedAt = nowIso();
+      sessions.set(key, state);
+
+      const out = await replyHiddenSenderPrompt(res, state, userMsg);
+      sessions.set(key, state);
+      return out;
+    }
+
+    // Hidden sender pending response
     if (state.hiddenSenderTracePending) {
       if (isYes(userMsg)) {
         sessions.set(key, state);
@@ -1545,15 +1556,6 @@ export default async function handler(req, res) {
     state.turnCount = (state.turnCount || 0) + 1;
     pushHistory(state, "user", userMsg);
 
-    // Any encoded fragment or combination should trigger the full ominous sequence
-    if (containsAnyHiddenSenderTrigger(userMsg)) {
-      sessions.set(key, state);
-      const out = await replyHiddenSenderPrompt(res, state, userMsg);
-      sessions.set(key, state);
-      return out;
-    }
-
-    // After sender reveal
     if (state.hiddenSenderRevealed && asksWhoIsGrahamKade(userMsg)) {
       sessions.set(key, state);
       const out = await replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML);
