@@ -386,38 +386,36 @@ function normalizeEncodedMessage(msg) {
     .join("\n");
 }
 
-function messageHasExactLine(message, targetLine) {
-  const lines = normalizeEncodedMessage(message).split("\n").filter(Boolean);
-  return lines.includes(targetLine);
+function getEncodedLines(msg) {
+  return normalizeEncodedMessage(msg).split("\n").filter(Boolean);
+}
+
+function isOpenEyesLine(line) {
+  return (
+    line === HIDDEN_SENDER_TRIGGERS.binaryOpenEyes ||
+    line === HIDDEN_SENDER_TRIGGERS.caesarOpenEyes
+  );
+}
+
+function isNothingSeemsLine(line) {
+  return (
+    line === HIDDEN_SENDER_TRIGGERS.binaryNothingSeems ||
+    line === HIDDEN_SENDER_TRIGGERS.caesarNothingSeems
+  );
 }
 
 function isFullHiddenSenderTrigger(msg) {
-  const normalized = normalizeEncodedMessage(msg);
-
-  const hasBinaryOpen = messageHasExactLine(normalized, HIDDEN_SENDER_TRIGGERS.binaryOpenEyes);
-  const hasBinaryNothing = messageHasExactLine(normalized, HIDDEN_SENDER_TRIGGERS.binaryNothingSeems);
-  const hasCaesarOpen = messageHasExactLine(normalized, HIDDEN_SENDER_TRIGGERS.caesarOpenEyes);
-  const hasCaesarNothing = messageHasExactLine(normalized, HIDDEN_SENDER_TRIGGERS.caesarNothingSeems);
-
-  return (hasBinaryOpen && hasBinaryNothing) || (hasCaesarOpen && hasCaesarNothing);
+  const lines = getEncodedLines(msg);
+  const hasOpen = lines.some(isOpenEyesLine);
+  const hasNothing = lines.some(isNothingSeemsLine);
+  return hasOpen && hasNothing;
 }
 
 function getSingleLineHiddenSenderResponse(msg) {
   const normalized = normalizeEncodedMessage(msg);
 
-  if (
-    normalized === HIDDEN_SENDER_TRIGGERS.binaryOpenEyes ||
-    normalized === HIDDEN_SENDER_TRIGGERS.caesarOpenEyes
-  ) {
-    return "OPEN YOUR EYES";
-  }
-
-  if (
-    normalized === HIDDEN_SENDER_TRIGGERS.binaryNothingSeems ||
-    normalized === HIDDEN_SENDER_TRIGGERS.caesarNothingSeems
-  ) {
-    return "NOTHING IS AS IT SEEMS";
-  }
+  if (isOpenEyesLine(normalized)) return "OPEN YOUR EYES";
+  if (isNothingSeemsLine(normalized)) return "NOTHING IS AS IT SEEMS";
 
   return null;
 }
@@ -509,6 +507,23 @@ async function replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML) {
   return jsonWithChips(res, userMsg, {
     reply,
     type: "graham_kade_redirect",
+  });
+}
+
+async function replySingleLineFragment(res, state, userMsg, fragmentText) {
+  await delay(800, 1150);
+
+  const reply = joinLines([
+    `Observation: Partial encoded fragment detected.`,
+    `Action: Decoding available segment...`,
+    fragmentText,
+  ]);
+
+  pushHistory(state, "assistant", reply);
+  state.updatedAt = nowIso();
+  return jsonWithChips(res, userMsg, {
+    reply,
+    type: "hidden_sender_single_line",
   });
 }
 
@@ -1512,7 +1527,6 @@ export default async function handler(req, res) {
         return out;
       }
 
-      sessions.set(key, state);
       await delay(650, 950);
       const reply = `Query: Would you like me to identify the sender?`;
       pushHistory(state, "assistant", reply);
@@ -1564,6 +1578,7 @@ export default async function handler(req, res) {
     state.turnCount = (state.turnCount || 0) + 1;
     pushHistory(state, "user", userMsg);
 
+    // Full encoded message
     if (isFullHiddenSenderTrigger(userMsg)) {
       sessions.set(key, state);
       const out = await replyHiddenSenderPrompt(res, state, userMsg);
@@ -1571,23 +1586,16 @@ export default async function handler(req, res) {
       return out;
     }
 
+    // Single-line fragment only
     const singleLineHiddenReply = getSingleLineHiddenSenderResponse(userMsg);
     if (singleLineHiddenReply) {
-      await delay(800, 1150);
-      const reply = joinLines([
-        `Observation: Partial encoded fragment detected.`,
-        `Action: Decoding available segment...`,
-        singleLineHiddenReply,
-      ]);
-      pushHistory(state, "assistant", reply);
-      state.updatedAt = nowIso();
       sessions.set(key, state);
-      return jsonWithChips(res, userMsg, {
-        reply,
-        type: "hidden_sender_single_line",
-      });
+      const out = await replySingleLineFragment(res, state, userMsg, singleLineHiddenReply);
+      sessions.set(key, state);
+      return out;
     }
 
+    // After sender reveal
     if (state.hiddenSenderRevealed && asksWhoIsGrahamKade(userMsg)) {
       sessions.set(key, state);
       const out = await replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML);
