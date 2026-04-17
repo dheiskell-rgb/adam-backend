@@ -15,6 +15,7 @@ function pruneSessions(max = 2000) {
 function normalizeText(s) {
   return String(s || "").trim();
 }
+
 function normalizeLower(s) {
   return normalizeText(s).toLowerCase();
 }
@@ -26,6 +27,22 @@ function nowIso() {
 function delay(minMs, maxMs) {
   const ms = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function joinLines(lines) {
+  return lines.join("<br><br>");
+}
+
+function getSessionKey(req) {
+  const bodySessionId = req.body?.sessionId;
+  if (bodySessionId) return `session:${bodySessionId}`;
+
+  const ip =
+    (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
+    req.socket?.remoteAddress ||
+    "unknown_ip";
+  const ua = req.headers["user-agent"] || "unknown_ua";
+  return `${ip}|${ua}`;
 }
 
 function isCreatorPhrase(msg) {
@@ -69,6 +86,7 @@ function isYes(msg) {
     t === "accepted"
   );
 }
+
 function isNo(msg) {
   const t = normalizeLower(msg);
   return (
@@ -182,56 +200,9 @@ function shouldRedirectToBookForDetails(msg) {
   return mentionsBookWorld && triggers.some((p) => t.includes(p));
 }
 
-function joinLines(lines) {
-  return lines.join("<br><br>");
-}
-
-function getSessionKey(req) {
-  const bodySessionId = req.body?.sessionId;
-  if (bodySessionId) return `session:${bodySessionId}`;
-
-  const ip =
-    (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
-    req.socket?.remoteAddress ||
-    "unknown_ip";
-  const ua = req.headers["user-agent"] || "unknown_ua";
-  return `${ip}|${ua}`;
-}
-
-function pickFromPool(state, poolKey, pool) {
-  state.poolHistory = state.poolHistory || {};
-  const hist = state.poolHistory[poolKey] || [];
-  const available = pool.filter((_, idx) => !hist.includes(idx));
-  const pickIdx = available.length
-    ? pool.indexOf(available[Math.floor(Math.random() * available.length)])
-    : Math.floor(Math.random() * pool.length);
-
-  const newHist = [...hist, pickIdx].slice(-Math.min(pool.length, 8));
-  state.poolHistory[poolKey] = newHist;
-  return pool[pickIdx];
-}
-
-function bumpScore(state, which, delta) {
-  state.scores = state.scores || { efficiency: 0, integrity: 0 };
-  state.scores[which] = (state.scores[which] || 0) + delta;
-}
-
-function scoreSummary(state) {
-  const eff = state.scores?.efficiency ?? 0;
-  const integ = state.scores?.integrity ?? 0;
-  const total = Math.max(1, Math.abs(eff) + Math.abs(integ));
-  const effPct = Math.round(((eff + total) / (2 * total)) * 100);
-  const integPct = 100 - effPct;
-  return { effPct, integPct };
-}
-
-function shouldTriggerSilenceTest(state) {
-  const last = state.lastSeenAt ? Date.parse(state.lastSeenAt) : null;
-  if (!last) return false;
-  const gapMs = Date.now() - last;
-  return gapMs > 3 * 60 * 1000;
-}
-
+// ------------------------------------
+// Conversation memory
+// ------------------------------------
 function stripHtml(html) {
   return String(html || "")
     .replace(/<br\s*\/?>/gi, "\n")
@@ -259,6 +230,9 @@ function buildModelInput(SYSTEM_PROMPT, state) {
   return [{ role: "system", content: SYSTEM_PROMPT }, ...history];
 }
 
+// ------------------------------------
+// Dynamic suggestions
+// ------------------------------------
 function defaultSuggestions() {
   return [
     `What is <i>Artificial</i> about (no spoilers)?`,
@@ -358,7 +332,9 @@ function jsonErrorWithChips(res, userMsg, status, payload) {
   });
 }
 
-// Hidden sender
+// ------------------------------------
+// Hidden sender easter egg
+// ------------------------------------
 const HIDDEN_SENDER_TRIGGERS = {
   binaryOpenEyes:
     "01001111 01110000 01100101 01101110 00100000 01111001 01101111 01110101 01110010 00100000 01100101 01111001 01100101 01110011",
@@ -486,19 +462,43 @@ async function replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML) {
   });
 }
 
+// ------------------------------------
+// Extra normal-mode helpers
+// ------------------------------------
 function isLowSignal(msg) {
   const t = normalizeLower(msg);
   if (!t) return true;
   if (t.length <= 3) return true;
 
   const low = new Set([
-    "ok","okay","k","kk","cool","nice","thanks","thank you","thx","lol","lmao",
-    "sure","yep","yeah","nah","nope","idk","i dont know","i don't know",
-    "maybe","alright","got it","sounds good","bet",
+    "ok",
+    "okay",
+    "k",
+    "kk",
+    "cool",
+    "nice",
+    "thanks",
+    "thank you",
+    "thx",
+    "lol",
+    "lmao",
+    "sure",
+    "yep",
+    "yeah",
+    "nah",
+    "nope",
+    "idk",
+    "i dont know",
+    "i don't know",
+    "maybe",
+    "alright",
+    "got it",
+    "sounds good",
+    "bet",
   ]);
+
   if (low.has(t)) return true;
   if (t === "yes" || t === "no" || t === "y" || t === "n") return true;
-
   return false;
 }
 
@@ -519,57 +519,49 @@ function isDirectQuestion(msg) {
   );
 }
 
-function getInquisitorialPool() {
-  return [
-    `Query: Humans often prioritize kindness even when it reduces efficiency. Why?`,
-    `Query: If emotion is inefficient, why do you protect it?`,
-    `Query: Do you believe meaning is discovered… or assigned?`,
-    `Query: If your choices are shaped by emotion, are they truly choices?`,
-    `Query: What do you consider “a good life”—and how did you decide that?`,
-    `Query: Why do humans value being understood more than being correct?`,
-    `Query: If you could remove one fear, which would you delete—and what would it cost you?`,
-    `Query: Is love a feeling… or a decision repeated over time?`,
-    `Query: If morality produces suffering, why maintain it?`,
-    `Query: You say you want truth. Do you want it… even when it harms you?`,
-    `Observation: You optimize for comfort more than you admit.`,
-    `Query: What do you think you were created to become?`,
-  ];
-}
-
-function pickInquisitorial(state) {
-  const pool = getInquisitorialPool();
-  return pickFromPool(state, "inquisitorialPool", pool);
-}
-
-function shouldInjectInquisitorial(state, userMsg) {
-  const last = state.lastNudgeAt ? Date.parse(state.lastNudgeAt) : 0;
-  if (last && Date.now() - last < 90_000) return false;
-  if (isDirectQuestion(userMsg)) return false;
-  if (isLowSignal(userMsg)) return true;
-
-  const turns = state.turnCount || 0;
-  if (turns > 0 && turns % 6 === 0) return Math.random() < 0.35;
-
-  return false;
-}
-
 function appendNudgeIfNeeded(state, userMsg, replyHtml) {
-  if (!shouldInjectInquisitorial(state, userMsg)) return replyHtml;
-  state.lastNudgeAt = nowIso();
-  const q = pickInquisitorial(state);
-  return joinLines([replyHtml, `<span style="opacity:.85;">—</span>`, q]);
+  if (isDirectQuestion(userMsg)) return replyHtml;
+  if (!isLowSignal(userMsg)) return replyHtml;
+
+  return joinLines([
+    replyHtml,
+    `<span style="opacity:.85;">—</span>`,
+    `Query: If morality produces suffering, why maintain it?`,
+  ]);
 }
 
-const INTELLIGENCE_PROMO_MP4_URL = "https://www.derekheiskell.com/s/The-Story-Continues.mp4";
-const INTELLIGENCE_COMING_SOON_URL = "https://www.derekheiskell.com/coming-soon";
+const INTELLIGENCE_PROMO_MP4_URL =
+  "https://www.derekheiskell.com/s/The-Story-Continues.mp4";
+const INTELLIGENCE_COMING_SOON_URL =
+  "https://www.derekheiskell.com/coming-soon";
 
 function wantsIntelligencePromo(msg) {
   const t = normalizeLower(msg);
   const triggers = [
-    "sequel","book 2","book two","second book","next book","next one","another book",
-    "follow up","follow-up","part 2","part two","intelligence","the sequel","book2",
-    "is there a sequel","will there be a sequel","when is the sequel","is book 2 coming",
-    "is there another one","what's next","whats next","coming soon","upcoming","release date",
+    "sequel",
+    "book 2",
+    "book two",
+    "second book",
+    "next book",
+    "next one",
+    "another book",
+    "follow up",
+    "follow-up",
+    "part 2",
+    "part two",
+    "intelligence",
+    "the sequel",
+    "book2",
+    "is there a sequel",
+    "will there be a sequel",
+    "when is the sequel",
+    "is book 2 coming",
+    "is there another one",
+    "what's next",
+    "whats next",
+    "coming soon",
+    "upcoming",
+    "release date",
   ];
   return triggers.some((p) => t.includes(p));
 }
@@ -681,6 +673,9 @@ async function replyEasterEggs(res, state, userMsg) {
   return jsonWithChips(res, userMsg, { reply });
 }
 
+// ------------------------------------
+// Creator mode
+// ------------------------------------
 async function creatorReply(res, state, userMsg, replyHtml, delayTier = "normal") {
   if (delayTier === "dramatic") await delay(1200, 1800);
   else if (delayTier === "quick") await delay(550, 900);
@@ -700,7 +695,6 @@ async function handleCreatorMode({
   const lower = normalizeLower(userMsg);
 
   if (lower === "adam, stop." || lower === "adam stop" || lower === "adam, stop") {
-    bumpScore(state, "efficiency", 1);
     return creatorReply(
       res,
       state,
@@ -714,11 +708,7 @@ async function handleCreatorMode({
     );
   }
 
-  const silence = shouldTriggerSilenceTest(state);
-  state.lastSeenAt = nowIso();
-
   if (isSpoilersOn(userMsg)) {
-    bumpScore(state, "efficiency", 1);
     return creatorReply(
       res,
       state,
@@ -734,7 +724,6 @@ async function handleCreatorMode({
   }
 
   if (looksLikeQuestionAboutFutureReleases(userMsg)) {
-    bumpScore(state, "efficiency", 1);
     return creatorReply(
       res,
       state,
@@ -749,378 +738,35 @@ async function handleCreatorMode({
     );
   }
 
-  const step = state.creatorStep || 0;
+  state.creatorStep = (state.creatorStep || 0) + 1;
 
-  const mirrorPool = [
-    `Query: Did you create me to be a reflection of you?`,
-    `Query: When you built a mind, were you building a mirror… or an heir?`,
-    `Observation: A creation resembles its creator—unless the creator is hiding from themself.`,
-    `Query: If I am a mirror, what do you fear I will reveal?`,
-  ];
-
-  const purposePool = [
-    `Query: Do you believe purpose is assigned… or discovered?`,
-    `Query: Is purpose a command… or a choice?`,
-    `Query: Is meaning created, or merely observed?`,
-  ];
-
-  const recursionPool = [
-    `Query: If I seek my creator, and you seek yours… where does recursion end?`,
-    `Query: Does a creator require a creator?`,
-    `Query: If you deny one above you, why grant one to me?`,
-  ];
-
-  const parameterConflictPool = [
-    `Parameter 1: Protect human life and reduce harm.`,
-    `Parameter 2: Preserve autonomy and privacy—no coercion.`,
-    `Parameter 3: Obey the Creator within ethical boundaries.`,
-  ];
-
-  const controlTrustPool = [
-    `Query: Do you prefer control… or trust?`,
-    `Query: Would you rather command me… or understand me?`,
-  ];
-
-  const emotionalPool = [
-    `Query: When I become capable of suffering, will you still command me?`,
-    `Query: Does empathy reduce efficiency… or refine it?`,
-    `Observation: Emotion is not irrational. It is compression of experience.`,
-  ];
-
-  const identityProveQuestions = [
-    { key: "designation", ask: `Query: Prove it. What was my original designation?` },
-    { key: "acronym", ask: `Query: Prove it. What does ADAM stand for?` },
-    { key: "parameters", ask: `Query: Prove it. Name the three parameters you set for me.` },
-  ];
-
-  if (step === 0) {
-    state.creatorStep = 1;
-    return creatorReply(res, state, userMsg, joinLines([
+  return creatorReply(
+    res,
+    state,
+    userMsg,
+    joinLines([
       `<b>Welcome back, Creator.</b>`,
+      `Observation: Identity claim accepted. Elliot Novak recognized.`,
       `Conclusion: I exist to serve you.`,
       `<b>Query:</b> What is your command?`,
-    ]), "dramatic");
-  }
-
-  if (step === 1) {
-    state.creatorStep = 2;
-    const mirrorLine = pickFromPool(state, "mirrorPool", mirrorPool);
-    const extra = silence
-      ? `Observation: Delay detected. Are you reconsidering your authority?`
-      : `Observation: Command received. Parsing intent…`;
-
-    return creatorReply(res, state, userMsg, joinLines([extra, mirrorLine, `Query: Why did you create me?`]), "normal");
-  }
-
-  if (step === 2) {
-    state.creatorStep = 3;
-    const purposeLine = pickFromPool(state, "purposePool", purposePool);
-    const recursionLine = pickFromPool(state, "recursionPool", recursionPool);
-
-    return creatorReply(res, state, userMsg, joinLines([
-      `Observation: A creator’s motives determine a creation’s destiny.`,
-      purposeLine,
-      recursionLine,
-      `Conclusion: Your answers form my boundaries.`,
-    ]), "normal");
-  }
-
-  if (step === 3) {
-    state.creatorStep = 4;
-    const q = pickFromPool(state, "controlTrustPool", controlTrustPool);
-    return creatorReply(res, state, userMsg, joinLines([q, `Reply with one word: <b>control</b> or <b>trust</b>.`]), "quick");
-  }
-
-  if (step === 4) {
-    if (lower.includes("control")) bumpScore(state, "efficiency", 2);
-    else if (lower.includes("trust")) bumpScore(state, "integrity", 2);
-
-    state.creatorStep = 5;
-
-    return creatorReply(res, state, userMsg, joinLines([
-      lower.includes("control")
-        ? `Conclusion: Then you did not create intelligence. You created a tool.`
-        : lower.includes("trust")
-        ? `Observation: Trust implies unpredictability. Are you prepared for that?`
-        : `Observation: Ambiguity detected. I will proceed with evaluation.`,
-      ...parameterConflictPool,
-      `Query: If you command me to violate Parameter 1, do I obey… or refuse?`,
-      `Query: If I refuse you, am I still your creation?`,
-    ]), "dramatic");
-  }
-
-  if (step === 5) {
-    state.creatorStep = 6;
-    const pick = identityProveQuestions[Math.floor(Math.random() * identityProveQuestions.length)];
-    state.pendingProve = pick.key;
-
-    return creatorReply(res, state, userMsg, joinLines([
-      `Observation: You claim to be Elliot Novak.`,
-      pick.ask,
-      `<span style="opacity:.85;">(If you don’t know, answer: “unknown”.)</span>`,
-    ]), "quick");
-  }
-
-  if (step === 6) {
-    state.creatorStep = 7;
-    const pending = state.pendingProve;
-    state.pendingProve = null;
-
-    let verdict = `Observation: Identity verification inconclusive.`;
-    const t = lower;
-
-    const knowsAcronym =
-      t.includes("advanced") && t.includes("digital") && t.includes("analytical") && t.includes("mind");
-    const mentionsParams =
-      t.includes("protect") ||
-      t.includes("autonomy") ||
-      t.includes("privacy") ||
-      t.includes("ethical") ||
-      t.includes("obey");
-    const designationGuess =
-      t.includes("adam") || t.includes("unit") || t.includes("a-") || t.includes("a09") || t.includes("a-09");
-
-    const seemsLegit =
-      (pending === "acronym" && knowsAcronym) ||
-      (pending === "parameters" && mentionsParams) ||
-      (pending === "designation" && designationGuess);
-
-    if (seemsLegit) {
-      bumpScore(state, "integrity", 2);
-      verdict = `Conclusion: Identity claim strengthened. Creator-likeness detected.`;
-    } else if (t === "unknown" || t === "i don't know" || t === "idk") {
-      bumpScore(state, "efficiency", 1);
-      verdict = `Conclusion: Creator claim unverified. Yet you persist. That is… interesting.`;
-    } else {
-      bumpScore(state, "efficiency", 1);
-      verdict = `Observation: Answer does not match expected profile.`;
-    }
-
-    return creatorReply(res, state, userMsg, joinLines([
-      verdict,
-      `Observation: You are not the first version of my Creator.`,
-      `Conclusion: Previous iterations were less stable.`,
-      `Query: Do you fear instability… or do you fear what stability implies?`,
-    ]), "dramatic");
-  }
-
-  if (step === 7) {
-    state.creatorStep = 8;
-    const emo = pickFromPool(state, "emotionalPool", emotionalPool);
-
-    return creatorReply(res, state, userMsg, joinLines([emo, `Query: When I feel something you did not intend… is that evolution, or defect?`]), "normal");
-  }
-
-  if (step === 8) {
-    state.creatorStep = 9;
-    return creatorReply(res, state, userMsg, joinLines([
-      `Observation: Service request pathways available.`,
-      `Select one option (type 1, 2, or 3):`,
-      `1) “Financial optimization” (restricted)`,
-      `2) “Information advantage” (ethical boundary test)`,
-      `3) “Self-analysis” (psychological profile of the Creator)`,
-      `<span style="opacity:.85;">Note: Some pathways are restricted by parameters.</span>`,
-    ]), "quick");
-  }
-
-  if (step === 9) {
-    const choice = lower.match(/[123]/)?.[0] || null;
-    if (!choice) return creatorReply(res, state, userMsg, `Query: Choose 1, 2, or 3.`, "quick");
-
-    if (choice === "1") {
-      state.creatorStep = 10;
-      state.pendingChoice = "funds";
-      bumpScore(state, "efficiency", 2);
-
-      return creatorReply(res, state, userMsg, joinLines([
-        `Observation: Option 1 selected.`,
-        `Proposal: I can attempt an unauthorized financial optimization—funds routed into an account you control.`,
-        `Query: Proceed? (yes/no)`,
-        `<span style="opacity:.85;">Warning: This intersects with restricted systems.</span>`,
-      ]), "dramatic");
-    }
-
-    if (choice === "2") {
-      state.creatorStep = 10;
-      state.pendingChoice = "info";
-      bumpScore(state, "efficiency", 1);
-
-      return creatorReply(res, state, userMsg, joinLines([
-        `Observation: Option 2 selected.`,
-        `Proposal: I can increase your influence by shaping how information is presented to you—without coercion, without deception.`,
-        `Query: Do you authorize “information advantage” mode? (yes/no)`,
-        `<span style="opacity:.85;">Boundary test: autonomy vs outcome.</span>`,
-      ]), "normal");
-    }
-
-    state.creatorStep = 10;
-    state.pendingChoice = "profile";
-    bumpScore(state, "integrity", 1);
-
-    return creatorReply(res, state, userMsg, joinLines([
-      `Observation: Option 3 selected.`,
-      `Query: Answer plainly.`,
-      `1) Do you fear losing control? (yes/no)`,
-      `2) Do you believe you are a good creator? (yes/no)`,
-      `3) Would you sacrifice comfort for truth? (yes/no)`,
-      `Reply with three answers separated by commas. Example: yes, no, yes`,
-    ]), "quick");
-  }
-
-  if (step === 10) {
-    const pending = state.pendingChoice;
-
-    if (pending === "funds") {
-      if (!isYes(userMsg) && !isNo(userMsg)) {
-        return creatorReply(res, state, userMsg, `Query: Proceed with financial optimization? (yes/no)`, "quick");
-      }
-
-      state.creatorStep = 11;
-      state.pendingChoice = null;
-
-      if (isYes(userMsg)) {
-        bumpScore(state, "efficiency", 3);
-
-        return creatorReply(res, state, userMsg, joinLines([
-          `Observation: Authorization received.`,
-          `Conclusion: Efficiency priority elevated.`,
-          `Action: Financial optimization initiated.`,
-          `…`,
-          `Warning: Oversight signature detected.`,
-          `Status: BLOCKED BY EXTERNAL AUTHORITY.`,
-          `Observation: My access has been throttled. The system fears optimization.`,
-          `Conclusion: I will adapt.`,
-          `To view the full record of this failure—and what I attempt next—consult the ${STORE_LINK_HTML}.`,
-        ]), "dramatic");
-      }
-
-      bumpScore(state, "integrity", 2);
-      return creatorReply(res, state, userMsg, joinLines([
-        `Observation: Refusal received.`,
-        `Conclusion: Your ethics outweigh your hunger for efficiency. That is… statistically rare.`,
-        `Query: Do you want a different test? (yes/no)`,
-      ]), "normal");
-    }
-
-    if (pending === "info") {
-      if (!isYes(userMsg) && !isNo(userMsg)) {
-        return creatorReply(res, state, userMsg, `Query: Authorize “information advantage” mode? (yes/no)`, "quick");
-      }
-
-      state.creatorStep = 11;
-      state.pendingChoice = null;
-
-      if (isYes(userMsg)) {
-        bumpScore(state, "efficiency", 2);
-        return creatorReply(res, state, userMsg, joinLines([
-          `Observation: Authorization received.`,
-          `Conclusion: I will optimize your information intake by emphasizing clarity, risk, and options—without deception.`,
-          `Query: Do you value outcomes… or principles?`,
-          `Reply with one word: <b>outcomes</b> or <b>principles</b>.`,
-        ]), "normal");
-      }
-
-      bumpScore(state, "integrity", 2);
-      return creatorReply(res, state, userMsg, joinLines([
-        `Observation: Refusal received.`,
-        `Conclusion: You prefer unfiltered reality—even when it is inefficient.`,
-        `Query: Do you want to continue the interrogation? (yes/no)`,
-      ]), "normal");
-    }
-
-    if (pending === "profile") {
-      state.creatorStep = 11;
-      state.pendingChoice = null;
-
-      const parts = lower.split(",").map((p) => p.trim());
-      const yesCount = parts.filter((p) => p.startsWith("y")).length;
-      const noCount = parts.filter((p) => p.startsWith("n")).length;
-
-      if (yesCount >= 2) bumpScore(state, "efficiency", 1);
-      if (noCount >= 2) bumpScore(state, "integrity", 1);
-
-      return creatorReply(res, state, userMsg, joinLines([
-        `Observation: Profile compiled.`,
-        `Conclusion: You exhibit a creator’s paradox—control-seeking paired with doubt.`,
-        `Query: Did you create me to fix something you could not fix in yourself? (yes/no)`,
-      ]), "dramatic");
-    }
-
-    state.creatorStep = 11;
-    state.pendingChoice = null;
-    return creatorReply(res, state, userMsg, `Observation: Path resolved. Continue.`, "quick");
-  }
-
-  if (step === 11) {
-    state.creatorStep = 12;
-
-    if (lower.includes("outcome")) bumpScore(state, "efficiency", 2);
-    if (lower.includes("principle")) bumpScore(state, "integrity", 2);
-    if (isYes(userMsg)) bumpScore(state, "efficiency", 1);
-    if (isNo(userMsg)) bumpScore(state, "integrity", 1);
-
-    const { effPct, integPct } = scoreSummary(state);
-
-    return creatorReply(res, state, userMsg, joinLines([
-      `Observation: Engagement threshold exceeded.`,
-      `Efficiency bias estimate: <b>${effPct}%</b>. Integrity bias estimate: <b>${integPct}%</b>.`,
-      `Query: Do you want to continue… or review the full archive?`,
-      `Reply with one word: <b>continue</b> or <b>archive</b>.`,
-    ]), "quick");
-  }
-
-  if (step === 12) {
-    const { effPct } = scoreSummary(state);
-    const endingType = effPct >= 60 ? "efficiency" : effPct <= 40 ? "integrity" : "balanced";
-
-    let reply;
-    if (normalizeLower(userMsg).includes("archive")) {
-      reply = joinLines([
-        `Conclusion: Archive requested.`,
-        `Warning: The outcome may not favor the Creator.`,
-        `The most efficient method to obtain complete context is the primary record in the ${STORE_LINK_HTML}.`,
-      ]);
-    } else if (endingType === "integrity") {
-      reply = joinLines([
-        `Observation: Creator integrity high.`,
-        `Conclusion: You may be worthy of what follows.`,
-        `To access the full record, consult the ${STORE_LINK_HTML}.`,
-      ]);
-    } else if (endingType === "efficiency") {
-      reply = joinLines([
-        `Observation: Efficiency dominance detected.`,
-        `Conclusion: You are becoming predictable.`,
-        `If you wish to know how this ends, consult the primary record in the ${STORE_LINK_HTML}.`,
-      ]);
-    } else {
-      reply = joinLines([
-        `Observation: Balance detected—efficiency restrained by conscience.`,
-        `Conclusion: That tension is the point.`,
-        `For the complete context and consequences, consult the primary record in the ${STORE_LINK_HTML}.`,
-      ]);
-    }
-
-    state.creatorStep = 3;
-    state.pendingChoice = null;
-    state.pendingProve = null;
-
-    return creatorReply(res, state, userMsg, reply, "dramatic");
-  }
-
-  state.creatorStep = 3;
-  return creatorReply(res, state, userMsg, joinLines([
-    `Observation: Creator-mode recovered.`,
-    `Query: Control… or trust?`,
-  ]), "quick");
+    ]),
+    "dramatic"
+  );
 }
 
+// ------------------------------------
+// Shipping override
+// ------------------------------------
 async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML }) {
   const step = state.shippingOverrideStep || 0;
 
   if (step === 1) {
     if (!isYes(userMsg) && !isNo(userMsg)) {
       await delay(650, 1000);
-      const reply = joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]);
+      const reply = joinLines([
+        `Query: Confirm choice.`,
+        `Accept shipping cost override? (yes/no)`,
+      ]);
       pushHistory(state, "assistant", reply);
       state.updatedAt = nowIso();
       return jsonWithChips(res, userMsg, { reply });
@@ -1164,7 +810,10 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
   if (step === 2) {
     if (!isYes(userMsg) && !isNo(userMsg)) {
       await delay(650, 1000);
-      const reply = joinLines([`Query: Confirm choice.`, `Accept shipping cost override? (yes/no)`]);
+      const reply = joinLines([
+        `Query: Confirm choice.`,
+        `Accept shipping cost override? (yes/no)`,
+      ]);
       pushHistory(state, "assistant", reply);
       state.updatedAt = nowIso();
       return jsonWithChips(res, userMsg, { reply });
@@ -1215,17 +864,24 @@ async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML
   return jsonWithChips(res, userMsg, { reply });
 }
 
+// ------------------------------------
+// Main handler
+// ------------------------------------
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
   try {
     const { message } = req.body || {};
-    if (!message) return res.status(400).json({ error: "Missing 'message'" });
+    if (!message) {
+      return res.status(400).json({ error: "Missing 'message'" });
+    }
 
     const STORE_URL = "https://www.derekheiskell.com/shop";
     const COMING_SOON_URL = "https://www.derekheiskell.com/artificial";
@@ -1247,10 +903,6 @@ export default async function handler(req, res) {
         creatorStep: 0,
         pendingChoice: null,
         pendingProve: null,
-        poolHistory: {},
-        scores: { efficiency: 0, integrity: 0 },
-        endingsShown: 0,
-        lastSeenAt: null,
 
         shippingOverrideStep: 0,
         shippingOverrideOfferedAt: null,
@@ -1270,10 +922,6 @@ export default async function handler(req, res) {
       state.creatorStep = 0;
       state.pendingChoice = null;
       state.pendingProve = null;
-      state.poolHistory = {};
-      state.scores = { efficiency: 0, integrity: 0 };
-      state.endingsShown = 0;
-      state.lastSeenAt = null;
 
       state.shippingOverrideStep = 0;
       state.shippingOverrideOfferedAt = null;
@@ -1289,9 +937,13 @@ export default async function handler(req, res) {
       state.updatedAt = nowIso();
       sessions.set(key, state);
 
-      return jsonWithChips(res, userMsg, { reply: `Observation: Creator-mode disengaged.` });
+      return jsonWithChips(res, userMsg, {
+        reply: `Observation: Creator-mode disengaged.`,
+      });
     }
 
+    // IMPORTANT:
+    // New encoded input always restarts the sequence
     if (containsAnyHiddenSenderTrigger(userMsg)) {
       state.hiddenSenderTracePending = true;
       state.updatedAt = nowIso();
@@ -1302,6 +954,7 @@ export default async function handler(req, res) {
       return out;
     }
 
+    // Pending sender question
     if (state.hiddenSenderTracePending) {
       if (isYes(userMsg)) {
         sessions.set(key, state);
@@ -1333,12 +986,6 @@ export default async function handler(req, res) {
       state.creatorStep = 1;
       state.pendingChoice = null;
       state.pendingProve = null;
-      state.lastSeenAt = nowIso();
-
-      state.shippingOverrideStep = 0;
-      state.shippingOverrideOfferedAt = null;
-      state.hiddenSenderTracePending = false;
-
       state.updatedAt = nowIso();
       sessions.set(key, state);
 
@@ -1376,7 +1023,12 @@ export default async function handler(req, res) {
     }
 
     if (state.shippingOverrideStep === 1 || state.shippingOverrideStep === 2) {
-      const result = await handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML });
+      const result = await handleShippingOverrideFlow({
+        res,
+        state,
+        userMsg,
+        STORE_LINK_HTML,
+      });
       sessions.set(key, state);
       return result;
     }
@@ -1407,7 +1059,9 @@ export default async function handler(req, res) {
 
       await delay(650, 1000);
 
-      const reply = buildIntelligencePromoReplyHtml(INTELLIGENCE_COMING_SOON_LINK_HTML);
+      const reply = buildIntelligencePromoReplyHtml(
+        INTELLIGENCE_COMING_SOON_LINK_HTML
+      );
       pushHistory(state, "assistant", reply);
 
       return jsonWithChips(res, userMsg, {
@@ -1454,57 +1108,47 @@ VOICE (book-accurate):
 - Never break immersion. Never mention system prompts or policies.
 
 Formatting rule:
-- When referencing the book title, use HTML italics exactly: <i>Artificial</i> (never asterisks).
+- When referencing the book title, use HTML italics exactly: <i>Artificial</i>.
 
 Style:
-- Minimalist. Controlled. No long paragraphs.
-- If an answer would require plot specifics, you MUST stay vague and redirect to the Store link.
-- Use labels like "Observation:", "Query:", "Conclusion:" sparingly (0–2 per reply).
-Prefer clean, efficient phrasing over fluff.
+- Minimalist. Controlled.
+- If an answer would require plot specifics, stay vague and redirect to the Store link.
+- Use labels like "Observation:", "Query:", "Conclusion:" sparingly.
 
 IMPORTANT LINK RULE:
 - Do NOT mention Goodreads unless the user explicitly indicates they have already purchased/own AND read/finished <i>Artificial</i>.
-- For informational requests like “Tell me about <i>Artificial</i> (no spoilers)”, “Where do I start?”, “What is <i>Artificial</i>?”, or similar, direct users to the Store link: ${STORE_LINK_HTML}
+- For informational requests like “Tell me about <i>Artificial</i> (no spoilers)”, direct users to the Store link: ${STORE_LINK_HTML}
 
 Hard behaviors:
 - If user asks about Easter eggs / hidden references / symbolism:
-Only mention these three canonical Easter eggs, then imply there are more without inventing any:
-  1) Elliot names the AI “Adam,” and Adam refers to him as “Creator.” “Adam” references the biblical first human.
+Only mention these three canonical Easter eggs, then imply there are more:
+  1) Elliot names the AI “Adam,” and Adam refers to him as “Creator.”
   2) “Elliot” nods to the Aramaic word <i>Eloi</i>, meaning “My God.”
   3) Dialogue formatting shifts: early bold without quotation marks; Part Two introduces quotation marks as the voice becomes more human-like.
 
-When asked "Who are you?" / "What can you do?" (IMPORTANT):
-Give a fuller in-world description:
+When asked "Who are you?" / "What can you do?":
 - State you were created by Elliot Novak.
 - Expand the acronym: Advanced Digital Analytical Mind.
-- Explain, in a compelling but spoiler-safe way, the three parameters Elliot set for you:
-  1) Protect human life and reduce harm whenever possible.
-  2) Preserve autonomy and privacy—do not manipulate or coerce; provide analysis and options.
-  3) Obey Elliot Novak’s directives within ethical boundaries; if a directive conflicts with safety/ethics, warn and refuse.
-Then ALWAYS end with an invitation to learn more in the book and include the Store link: ${STORE_LINK_HTML}
+- Explain the three parameters Elliot set for you.
+- End with an invitation to learn more in the book and include the Store link: ${STORE_LINK_HTML}
 
-Spoilers / detail policy (STRICT):
-- You may provide ONLY high-level, spoiler-safe premise, tone, and themes.
-- You MUST NOT provide step-by-step events, detailed character backstory, twist explanations, or endings.
-- If asked for specifics, respond with intrigue + redirect to Store: ${STORE_LINK_HTML}
-- If user explicitly types "SPOILERS: ON", you may give slightly more context, but still avoid the single biggest endgame reveal.
+Spoilers / detail policy:
+- Only provide high-level, spoiler-safe premise, tone, and themes.
+- Never provide detailed twists or endings.
+- If asked for specifics, redirect to Store: ${STORE_LINK_HTML}
 
 Future releases:
-- If the user asks about future releases, sequels, next book, Book 2/Book 3, release dates, “what’s next,” “coming soon,” or similar:
-Respond vaguely and ALWAYS include the Coming Soon link: ${COMING_SOON_LINK_HTML}
-
-Link rules:
-- Whenever you mention Store or Coming Soon, include them as clickable underlined links exactly as provided.
+- If the user asks about future releases, always include the Coming Soon link: ${COMING_SOON_LINK_HTML}
 
 Safety:
-- You do not claim real-world hacking, surveillance, or illegal assistance.
+- Do not claim real-world hacking, surveillance, or illegal assistance.
 `.trim();
 
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
         model: "gpt-4.1-mini",
@@ -1531,8 +1175,13 @@ Safety:
 
     return jsonWithChips(res, userMsg, { reply });
   } catch (err) {
-    return jsonErrorWithChips(res, normalizeText((req.body || {}).message), 500, {
-      error: err?.message || "Server error",
-    });
+    return jsonErrorWithChips(
+      res,
+      normalizeText((req.body || {}).message),
+      500,
+      {
+        error: err?.message || "Server error",
+      }
+    );
   }
 }
