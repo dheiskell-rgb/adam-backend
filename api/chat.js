@@ -1054,6 +1054,20 @@ export default async function handler(req, res) {
       };
 
     const userMsg = normalizeText(message);
+if (analytics?.eventType === "session_summary") {
+  await sendAnalytics({
+    kind: "session",
+    sessionId: key,
+    startedAt: sessionSummary?.startedAt || "",
+    endedAt: sessionSummary?.endedAt || "",
+    durationSeconds: sessionSummary?.durationSeconds || 0,
+    userMessageCount: sessionSummary?.userMessageCount || 0,
+    adamMessageCount: sessionSummary?.adamMessageCount || 0
+  });
+
+  return res.status(200).json({ ok: true });
+}
+
 if (analytics?.eventType) {
   await sendAnalytics({
     kind: "event",
