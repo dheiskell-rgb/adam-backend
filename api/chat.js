@@ -75,7 +75,20 @@ function buildModelInput(systemPrompt, state) {
 
   return [{ role: "system", content: systemPrompt }, ...history];
 }
+async function sendAnalytics(payload) {
+  const url = process.env.GOOGLE_APPS_SCRIPT_ANALYTICS_URL;
+  if (!url) return;
 
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (_) {
+    // Never break chat because analytics failed
+  }
+}
 function extractResponseText(data) {
   if (typeof data?.output_text === "string" && data.output_text.trim()) {
     return data.output_text.trim();
@@ -1004,7 +1017,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { message } = req.body || {};
+    const { message, pageUrl, analytics } = req.body || {};
 
     if (!message) {
       return res.status(400).json({ error: "Missing 'message'" });
@@ -1041,7 +1054,34 @@ export default async function handler(req, res) {
       };
 
     const userMsg = normalizeText(message);
+if (analytics?.eventType) {
+  await sendAnalytics({
+    kind: "event",
+    sessionId: key,
+    eventType: analytics.eventType,
+    pageUrl: pageUrl || "",
+    location: analytics.location || "",
+    userMessage: "",
+    metadata: {
+      ts: new Date().toISOString(),
+      ...analytics,
+    },
+  });
 
+  return res.status(200).json({ ok: true });
+}
+
+await sendAnalytics({
+  kind: "event",
+  sessionId: key,
+  eventType: "user_message",
+  pageUrl: pageUrl || "",
+  location: "chat",
+  userMessage: userMsg,
+  metadata: {
+    ts: new Date().toISOString(),
+  },
+});
     if (isCreatorReset(userMsg)) {
       state.creatorActive = false;
       state.creatorStep = 0;
