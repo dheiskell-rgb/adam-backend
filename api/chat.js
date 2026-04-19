@@ -126,7 +126,11 @@ function wantsToBuyBook(msg) {
     t.includes("artificial") ||
     t.includes("the book") ||
     t.includes("your book") ||
-    t.includes("novel");
+    t.includes("novel") ||
+    t.includes("copy") ||
+    t.includes("paperback") ||
+    t.includes("hardcover") ||
+    t.includes("ebook");
 
   const purchaseIntent =
     t.includes("buy") ||
@@ -142,7 +146,16 @@ function wantsToBuyBook(msg) {
     t.includes("i will buy") ||
     t.includes("i'll buy") ||
     t.includes("shipping") ||
-    t.includes("delivery");
+    t.includes("delivery") ||
+    t.includes("price") ||
+    t.includes("cost") ||
+    t.includes("how much") ||
+    t.includes("discount") ||
+    t.includes("coupon") ||
+    t.includes("promo code") ||
+    t.includes("sale") ||
+    t.includes("deal") ||
+    t.includes("cheaper");
 
   return mentionsBook && purchaseIntent;
 }
@@ -252,7 +265,14 @@ function getDynamicSuggestions(userMsg) {
     t.includes("delivery") ||
     t.includes("store") ||
     t.includes("checkout") ||
-    t.includes("add to cart")
+    t.includes("add to cart") ||
+    t.includes("price") ||
+    t.includes("cost") ||
+    t.includes("discount") ||
+    t.includes("coupon") ||
+    t.includes("promo code") ||
+    t.includes("sale") ||
+    t.includes("deal")
   ) {
     return [
       `Show me the Store`,
