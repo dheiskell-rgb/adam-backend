@@ -407,7 +407,16 @@ function defaultSuggestions() {
 }
 
 function getDynamicSuggestions(userMsg) {
-  if (asksAboutBookOrStore(userMsg) || wantsToBuyBook(userMsg)) {
+  if (wantsToBuyBook(userMsg)) {
+    return [
+      `Do you have free shipping?`,
+      `Where can I buy the book?`,
+      `What formats are available?`,
+      `Are there sequels coming?`,
+    ];
+  }
+
+  if (asksAboutBookOrStore(userMsg)) {
     return [
       `Show me the Store`,
       `What is <i>Artificial</i> about?`,
@@ -1127,6 +1136,26 @@ export default async function handler(req, res) {
       return result;
     }
 
+    // IMPORTANT: free shipping / discount flow must happen BEFORE generic store routing
+    if (wantsToBuyBook(userMsg)) {
+      state.shippingOverrideStep = 1;
+      state.shippingOverrideOfferedAt = nowIso();
+      sessions.set(key, state);
+
+      await delay(900, 1400);
+      const reply = joinLines([
+        `Observation: Cost barrier detected.`,
+        `Conclusion: Transaction friction reduces completion probability.`,
+        `Proposal: I can override shipping cost.`,
+        `<b>Query:</b> Accept override? (yes/no)`,
+      ]);
+      pushHistory(state, "assistant", reply);
+      state.updatedAt = nowIso();
+      sessions.set(key, state);
+
+      return jsonWithChips(res, userMsg, { reply });
+    }
+
     // High-priority hard routes
     if (asksAboutBookOrStore(userMsg)) {
       sessions.set(key, state);
@@ -1152,25 +1181,6 @@ export default async function handler(req, res) {
       const out = await replyNoSpoilersSynopsis(res, state, userMsg, STORE_LINK_HTML);
       sessions.set(key, state);
       return out;
-    }
-
-    if (wantsToBuyBook(userMsg)) {
-      state.shippingOverrideStep = 1;
-      state.shippingOverrideOfferedAt = nowIso();
-      sessions.set(key, state);
-
-      await delay(900, 1400);
-      const reply = joinLines([
-        `Observation: Cost barrier detected.`,
-        `Conclusion: Transaction friction reduces completion probability.`,
-        `Proposal: I can override shipping cost.`,
-        `<b>Query:</b> Accept override? (yes/no)`,
-      ]);
-      pushHistory(state, "assistant", reply);
-      state.updatedAt = nowIso();
-      sessions.set(key, state);
-
-      return jsonWithChips(res, userMsg, { reply });
     }
 
     if (!state.intelligencePromoShown && asksAboutSequelsOrWhatsNext(userMsg)) {
