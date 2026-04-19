@@ -1017,7 +1017,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { message, pageUrl, analytics } = req.body || {};
+    const { message, pageUrl, analytics, sessionSummary } = req.body || {};
 
     if (!message) {
       return res.status(400).json({ error: "Missing 'message'" });
@@ -1066,6 +1066,24 @@ if (analytics?.eventType === "session_summary") {
   });
 
   return res.status(200).json({ ok: true });
+}
+
+if (analytics?.eventType) {
+  await sendAnalytics({
+    kind: "event",
+    sessionId: key,
+    eventType: analytics.eventType,
+    pageUrl: pageUrl || "",
+    location: analytics.location || "",
+    userMessage: "",
+    metadata: {
+      ts: new Date().toISOString(),
+      ...analytics,
+    },
+  });
+
+  return res.status(200).json({ ok: true });
+}
 }
 
 if (analytics?.eventType) {
