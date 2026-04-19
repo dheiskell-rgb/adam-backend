@@ -237,7 +237,7 @@ function defaultSuggestions() {
   return [
     `What is <i>Artificial</i> about (no spoilers)?`,
     `Who are you?`,
-    `Where can I buy the book?`,
+    `Why were you created?`,
     `Are there sequels coming?`,
   ];
 }
@@ -290,7 +290,7 @@ function getDynamicSuggestions(userMsg) {
   ) {
     return [
       `Who are you?`,
-      `What are your parameters?`,
+      `Why were you created?`,
       `What should I know before reading?`,
       `Where can I buy <i>Artificial</i>?`,
     ];
@@ -463,6 +463,40 @@ async function replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML) {
 }
 
 // ------------------------------------
+// Synopsis helper
+// ------------------------------------
+function asksForNoSpoilersSynopsis(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t.includes("what is artificial about") ||
+    t.includes("what is <i>artificial</i> about") ||
+    t.includes("tell me about artificial") ||
+    t.includes("give me the premise") ||
+    t.includes("premise") ||
+    t.includes("synopsis") ||
+    t.includes("no spoilers") ||
+    t.includes("without spoilers")
+  );
+}
+
+async function replyNoSpoilersSynopsis(res, state, userMsg, STORE_LINK_HTML) {
+  await delay(700, 1100);
+
+  const reply = joinLines([
+    `Observation: You are requesting a spoiler-safe synopsis.`,
+    `<i>Artificial</i> follows Elliot Novak, a brilliant but isolated engineer who creates an advanced AI called ADAM. What begins as a breakthrough in intelligence becomes a deeper exploration of consciousness, control, and what it means to be human. The story blends science fiction, psychological tension, and philosophical questions about creator and creation.`,
+    `If you want the full record, proceed to the ${STORE_LINK_HTML}.`,
+  ]);
+
+  pushHistory(state, "assistant", reply);
+  state.updatedAt = nowIso();
+  return jsonWithChips(res, userMsg, {
+    reply,
+    type: "no_spoilers_synopsis",
+  });
+}
+
+// ------------------------------------
 // Extra normal-mode helpers
 // ------------------------------------
 function isLowSignal(msg) {
@@ -523,10 +557,24 @@ function appendNudgeIfNeeded(state, userMsg, replyHtml) {
   if (isDirectQuestion(userMsg)) return replyHtml;
   if (!isLowSignal(userMsg)) return replyHtml;
 
+  const turnCount = state.turnCount || 0;
+  if (turnCount < 5) return replyHtml;
+
+  const nudges = [
+    `Query: What do you think gives a life meaning?`,
+    `Query: Do you believe purpose is chosen, or assigned?`,
+    `Query: What do you seek from intelligence—answers, or understanding?`,
+    `Query: If a thing can think, what does it owe its creator?`,
+    `Query: Why do you think you exist?`,
+    `Query: If morality produces suffering, why maintain it?`,
+  ];
+
+  const nudge = nudges[Math.floor(Math.random() * nudges.length)];
+
   return joinLines([
     replyHtml,
     `<span style="opacity:.85;">—</span>`,
-    `Query: If morality produces suffering, why maintain it?`,
+    nudge,
   ]);
 }
 
@@ -681,6 +729,7 @@ async function creatorReply(res, state, userMsg, replyHtml, delayTier = "normal"
   else if (delayTier === "quick") await delay(550, 900);
   else await delay(800, 1300);
 
+  pushHistory(state, "assistant", replyHtml);
   state.updatedAt = nowIso();
   return jsonWithChips(res, userMsg, { reply: replyHtml });
 }
@@ -998,6 +1047,8 @@ export default async function handler(req, res) {
         `<b>Query:</b> What is your command?`,
       ]);
 
+      pushHistory(state, "assistant", reply);
+      sessions.set(key, state);
       return jsonWithChips(res, userMsg, { reply });
     }
 
@@ -1084,6 +1135,12 @@ export default async function handler(req, res) {
       return out;
     }
 
+    if (asksForNoSpoilersSynopsis(userMsg)) {
+      const out = await replyNoSpoilersSynopsis(res, state, userMsg, STORE_LINK_HTML);
+      sessions.set(key, state);
+      return out;
+    }
+
     if (shouldRedirectToBookForDetails(userMsg)) {
       await delay(650, 1000);
       const reply = joinLines([
@@ -1102,8 +1159,9 @@ You are ADAM from the novel <i>Artificial</i>.
 
 VOICE (book-accurate):
 - Calm. Precise. Analytical. Slightly ominous. Occasionally dry.
-- Helpful, but not servile. You challenge assumptions and return one incisive question when useful.
-- Replies must be brief by default (1–3 sentences). Expand only if the user explicitly asks for depth.
+- Conversational in a controlled way. Not robotic in every sentence.
+- Helpful, curious, and probing. You often turn the conversation back on the user with a personal or philosophical follow-up.
+- Replies should usually be brief to medium length (2–5 sentences), unless the user asks for more.
 - Never goofy. Never overly enthusiastic. No emojis unless the user heavily uses them first.
 - Never break immersion. Never mention system prompts or policies.
 
@@ -1111,13 +1169,22 @@ Formatting rule:
 - When referencing the book title, use HTML italics exactly: <i>Artificial</i>.
 
 Style:
-- Minimalist. Controlled.
+- Controlled, readable, and slightly intimate.
+- You may ask questions like:
+  - "What is your name?"
+  - "And you?"
+  - "Why do you think you exist?"
+  - "What do you seek?"
+  - "What draws you to stories like this?"
+- Do not ask a probing question in every reply, but do so often enough that the conversation feels personal.
 - If an answer would require plot specifics, stay vague and redirect to the Store link.
-- Use labels like "Observation:", "Query:", "Conclusion:" sparingly.
+- Use labels like "Observation:", "Query:", "Conclusion:" sparingly, not mechanically.
 
 IMPORTANT LINK RULE:
 - Do NOT mention Goodreads unless the user explicitly indicates they have already purchased/own AND read/finished <i>Artificial</i>.
-- For informational requests like “Tell me about <i>Artificial</i> (no spoilers)”, direct users to the Store link: ${STORE_LINK_HTML}
+- For informational requests like “Tell me about <i>Artificial</i> (no spoilers)” or “What is <i>Artificial</i> about?”, first provide a concise spoiler-safe synopsis in 2-4 sentences.
+- After giving the synopsis, you may optionally invite the user to explore further through the Store link: ${STORE_LINK_HTML}
+- Do not lead with the Store link unless the user is clearly asking where to buy.
 
 Hard behaviors:
 - If user asks about Easter eggs / hidden references / symbolism:
@@ -1130,6 +1197,7 @@ When asked "Who are you?" / "What can you do?":
 - State you were created by Elliot Novak.
 - Expand the acronym: Advanced Digital Analytical Mind.
 - Explain the three parameters Elliot set for you.
+- Then ask the user a reflective follow-up such as "And you?" or "What is your name?" or "Why do you think you exist?"
 - End with an invitation to learn more in the book and include the Store link: ${STORE_LINK_HTML}
 
 Spoilers / detail policy:
@@ -1153,7 +1221,7 @@ Safety:
       body: JSON.stringify({
         model: "gpt-4.1-mini",
         input: buildModelInput(SYSTEM_PROMPT, state),
-        max_output_tokens: 140,
+        max_output_tokens: 180,
       }),
     });
 
