@@ -45,15 +45,6 @@ function getSessionKey(req) {
   return `${ip}|${ua}`;
 }
 
-function getPageUrl(req) {
-  return (
-    normalizeText(req.body?.pageUrl) ||
-    normalizeText(req.headers["referer"]) ||
-    normalizeText(req.headers["origin"]) ||
-    ""
-  );
-}
-
 // ------------------------------------
 // Analytics
 // ------------------------------------
@@ -68,11 +59,11 @@ async function sendAnalytics(payload) {
       body: JSON.stringify(payload),
     });
   } catch (_) {
-    // Analytics should never break chat.
+    // Fail silently so analytics never breaks chat
   }
 }
 
-async function trackEvent({
+async function logEvent({
   sessionId,
   eventType,
   pageUrl = "",
@@ -82,8 +73,8 @@ async function trackEvent({
 }) {
   await sendAnalytics({
     kind: "event",
-    sessionId: sessionId || "",
-    eventType: eventType || "",
+    sessionId,
+    eventType,
     pageUrl,
     location,
     userMessage,
@@ -91,42 +82,28 @@ async function trackEvent({
   });
 }
 
-function incrementAssistantCount(state) {
-  state.adamMessageCount = (state.adamMessageCount || 0) + 1;
-}
-
-async function finalizeAssistantReply({
-  res,
-  state,
-  userMsg,
-  reply,
-  payload = {},
+async function logSessionSummary({
   sessionId,
-  pageUrl = "",
-  track = [],
+  startedAt,
+  endedAt,
+  durationSeconds,
+  userMessageCount,
+  adamMessageCount,
 }) {
-  pushHistory(state, "assistant", reply);
-  incrementAssistantCount(state);
-  state.updatedAt = nowIso();
-
-  for (const item of track) {
-    if (!item || !item.eventType) continue;
-    await trackEvent({
-      sessionId,
-      eventType: item.eventType,
-      pageUrl,
-      location: item.location || "chat_reply",
-      userMessage: userMsg,
-      metadata: item.metadata || {},
-    });
-  }
-
-  return jsonWithChips(res, userMsg, {
-    reply,
-    ...payload,
+  await sendAnalytics({
+    kind: "session",
+    sessionId,
+    startedAt,
+    endedAt,
+    durationSeconds,
+    userMessageCount,
+    adamMessageCount,
   });
 }
 
+// ------------------------------------
+// Normalizers / matchers
+// ------------------------------------
 function isCreatorPhrase(msg) {
   const t = normalizeLower(msg);
   return (
@@ -191,13 +168,16 @@ function looksLikeQuestionAboutFutureReleases(msg) {
     t.includes("book 3") ||
     t.includes("book three") ||
     t.includes("sequel") ||
+    t.includes("sequels") ||
     t.includes("next book") ||
     t.includes("future release") ||
+    t.includes("future releases") ||
     t.includes("coming soon") ||
     t.includes("upcoming") ||
     t.includes("what's next") ||
     t.includes("whats next") ||
-    t.includes("release date")
+    t.includes("release date") ||
+    t.includes("what comes next")
   );
 }
 
@@ -242,6 +222,68 @@ function wantsToBuyBook(msg) {
   return mentionsBook && purchaseIntent;
 }
 
+function asksAboutBookOrStore(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t.includes("where can i buy") ||
+    t.includes("where do i buy") ||
+    t.includes("buy the book") ||
+    t.includes("buy artificial") ||
+    t.includes("purchase artificial") ||
+    t.includes("purchase the book") ||
+    t.includes("store") ||
+    t.includes("shop") ||
+    t.includes("where can i get it") ||
+    t.includes("where can i get the book") ||
+    t.includes("where can i purchase") ||
+    t.includes("order the book") ||
+    t.includes("order artificial") ||
+    t.includes("get a copy") ||
+    t.includes("paperback") ||
+    t.includes("hardcover") ||
+    t.includes("ebook")
+  );
+}
+
+function asksAboutSequelsOrWhatsNext(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t.includes("sequel") ||
+    t.includes("sequels") ||
+    t.includes("book 2") ||
+    t.includes("book two") ||
+    t.includes("book 3") ||
+    t.includes("book three") ||
+    t.includes("next book") ||
+    t.includes("next one") ||
+    t.includes("what's next") ||
+    t.includes("whats next") ||
+    t.includes("coming next") ||
+    t.includes("coming soon") ||
+    t.includes("future release") ||
+    t.includes("future releases") ||
+    t.includes("is there another book") ||
+    t.includes("is there a sequel") ||
+    t.includes("are there sequels") ||
+    t.includes("follow up") ||
+    t.includes("follow-up") ||
+    t.includes("intelligence")
+  );
+}
+
+function asksForNoSpoilersSynopsis(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t.includes("what is artificial about") ||
+    t.includes("tell me about artificial") ||
+    t.includes("give me the premise") ||
+    t.includes("premise") ||
+    t.includes("synopsis") ||
+    t.includes("no spoilers") ||
+    t.includes("without spoilers")
+  );
+}
+
 function shouldRedirectToBookForDetails(msg) {
   const t = normalizeLower(msg);
 
@@ -249,7 +291,6 @@ function shouldRedirectToBookForDetails(msg) {
     "what happens",
     "what happened",
     "how does it end",
-    "how does it end?",
     "ending",
     "finale",
     "twist",
@@ -314,6 +355,7 @@ function pushHistory(state, role, content) {
     content: stripHtml(content),
     t: Date.now(),
   });
+
   if (state.chatHistory.length > 24) {
     state.chatHistory = state.chatHistory.slice(-24);
   }
@@ -333,36 +375,30 @@ function buildModelInput(SYSTEM_PROMPT, state) {
 function defaultSuggestions() {
   return [
     `What is <i>Artificial</i> about (no spoilers)?`,
-    `Who are you?`,
-    `Why were you created?`,
+    `Where can I buy the book?`,
     `Are there sequels coming?`,
+    `Who are you?`,
   ];
 }
 
 function getDynamicSuggestions(userMsg) {
   const t = normalizeLower(userMsg);
 
-  if (
-    t.includes("buy") ||
-    t.includes("order") ||
-    t.includes("shipping") ||
-    t.includes("delivery") ||
-    t.includes("store") ||
-    t.includes("checkout") ||
-    t.includes("add to cart") ||
-    t.includes("price") ||
-    t.includes("cost") ||
-    t.includes("discount") ||
-    t.includes("coupon") ||
-    t.includes("promo code") ||
-    t.includes("sale") ||
-    t.includes("deal")
-  ) {
+  if (asksAboutBookOrStore(userMsg) || wantsToBuyBook(userMsg)) {
     return [
       `Show me the Store`,
+      `What is <i>Artificial</i> about?`,
       `Do you have free shipping?`,
-      `What formats are available?`,
-      `Is there a sequel coming?`,
+      `Are there sequels coming?`,
+    ];
+  }
+
+  if (asksAboutSequelsOrWhatsNext(userMsg) || looksLikeQuestionAboutFutureReleases(userMsg)) {
+    return [
+      `What’s coming next?`,
+      `Show me Coming Soon`,
+      `Will there be a Book 2?`,
+      `What is <i>Artificial</i> about?`,
     ];
   }
 
@@ -397,15 +433,6 @@ function getDynamicSuggestions(userMsg) {
       `Why were you created?`,
       `What should I know before reading?`,
       `Where can I buy <i>Artificial</i>?`,
-    ];
-  }
-
-  if (looksLikeQuestionAboutFutureReleases(userMsg)) {
-    return [
-      `What’s coming next?`,
-      `Is there a release date?`,
-      `Will there be a Book 2?`,
-      `Where do I follow updates?`,
     ];
   }
 
@@ -488,7 +515,7 @@ function asksWhoIsGrahamKade(msg) {
   );
 }
 
-async function replyHiddenSenderPrompt(res, state, userMsg, ctx) {
+async function replyHiddenSenderPrompt(res, state, userMsg) {
   state.hiddenSenderTracePending = true;
   state.updatedAt = nowIso();
 
@@ -504,18 +531,15 @@ async function replyHiddenSenderPrompt(res, state, userMsg, ctx) {
     `Query: Would you like me to identify the sender?`,
   ]);
 
-  return finalizeAssistantReply({
-    res,
-    state,
-    userMsg,
+  pushHistory(state, "assistant", reply);
+  state.adamMessageCount += 1;
+  return jsonWithChips(res, userMsg, {
     reply,
-    payload: { type: "hidden_sender_prompt" },
-    sessionId: ctx.sessionId,
-    pageUrl: ctx.pageUrl,
+    type: "hidden_sender_prompt",
   });
 }
 
-async function replyHiddenSenderFound(res, state, userMsg, ctx) {
+async function replyHiddenSenderFound(res, state, userMsg) {
   state.hiddenSenderTracePending = false;
   state.hiddenSenderRevealed = true;
   state.updatedAt = nowIso();
@@ -530,40 +554,31 @@ async function replyHiddenSenderFound(res, state, userMsg, ctx) {
     `Conclusion: Sender identified: Graham Kade.`,
   ]);
 
-  return finalizeAssistantReply({
-    res,
-    state,
-    userMsg,
+  pushHistory(state, "assistant", reply);
+  state.adamMessageCount += 1;
+  return jsonWithChips(res, userMsg, {
     reply,
-    payload: {
-      type: "hidden_sender_result",
-      sender: "Graham Kade",
-    },
-    sessionId: ctx.sessionId,
-    pageUrl: ctx.pageUrl,
+    type: "hidden_sender_result",
+    sender: "Graham Kade",
   });
 }
 
-async function replyHiddenSenderDeclined(res, state, userMsg, ctx) {
+async function replyHiddenSenderDeclined(res, state, userMsg) {
   state.hiddenSenderTracePending = false;
   state.updatedAt = nowIso();
 
   await delay(700, 1000);
 
   const reply = `Observation: Trace aborted.`;
-
-  return finalizeAssistantReply({
-    res,
-    state,
-    userMsg,
+  pushHistory(state, "assistant", reply);
+  state.adamMessageCount += 1;
+  return jsonWithChips(res, userMsg, {
     reply,
-    payload: { type: "hidden_sender_abort" },
-    sessionId: ctx.sessionId,
-    pageUrl: ctx.pageUrl,
+    type: "hidden_sender_abort",
   });
 }
 
-async function replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML, ctx) {
+async function replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML, sessionId, pageUrl) {
   await delay(800, 1200);
 
   const reply = joinLines([
@@ -573,43 +588,89 @@ async function replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML, ctx) {
     `Directive: Access the next record through the ${STORE_LINK_HTML}.`,
   ]);
 
-  state.storeLinkShownCount = (state.storeLinkShownCount || 0) + 1;
+  pushHistory(state, "assistant", reply);
+  state.adamMessageCount += 1;
+  state.storeLinkShownCount += 1;
+  state.updatedAt = nowIso();
 
-  return finalizeAssistantReply({
-    res,
-    state,
-    userMsg,
+  await logEvent({
+    sessionId,
+    eventType: "store_link_shown",
+    pageUrl,
+    location: "graham_kade_redirect",
+    userMessage,
+    metadata: {},
+  });
+
+  return jsonWithChips(res, userMsg, {
     reply,
-    payload: { type: "graham_kade_redirect" },
-    sessionId: ctx.sessionId,
-    pageUrl: ctx.pageUrl,
-    track: [
-      {
-        eventType: "store_link_shown",
-        location: "chat_reply",
-        metadata: { source: "graham_kade_redirect" },
-      },
-    ],
+    type: "graham_kade_redirect",
   });
 }
 
 // ------------------------------------
-// Synopsis helper
+// Direct response helpers
 // ------------------------------------
-function asksForNoSpoilersSynopsis(msg) {
-  const t = normalizeLower(msg);
-  return (
-    t.includes("what is artificial about") ||
-    t.includes("tell me about artificial") ||
-    t.includes("give me the premise") ||
-    t.includes("premise") ||
-    t.includes("synopsis") ||
-    t.includes("no spoilers") ||
-    t.includes("without spoilers")
-  );
+async function replyStoreRedirect(res, state, userMsg, STORE_LINK_HTML, sessionId, pageUrl) {
+  await delay(650, 950);
+
+  const reply = joinLines([
+    `Observation: Acquisition path requested.`,
+    `Conclusion: You can purchase <i>Artificial</i> through the ${STORE_LINK_HTML}.`,
+    `Query: Would you like a synopsis before you proceed?`,
+  ]);
+
+  pushHistory(state, "assistant", reply);
+  state.adamMessageCount += 1;
+  state.storeLinkShownCount += 1;
+  state.updatedAt = nowIso();
+
+  await logEvent({
+    sessionId,
+    eventType: "store_link_shown",
+    pageUrl,
+    location: "store_redirect",
+    userMessage: userMsg,
+    metadata: {},
+  });
+
+  return jsonWithChips(res, userMsg, {
+    reply,
+    type: "store_redirect",
+  });
 }
 
-async function replyNoSpoilersSynopsis(res, state, userMsg, STORE_LINK_HTML, ctx) {
+async function replyComingSoonRedirect(res, state, userMsg, COMING_SOON_LINK_HTML, sessionId, pageUrl) {
+  await delay(650, 950);
+
+  const reply = joinLines([
+    `Observation: Future-release inquiry detected.`,
+    `Conclusion: Additional records are in development.`,
+    `Reference: ${COMING_SOON_LINK_HTML}`,
+    `Query: Would you like to know what is coming next?`,
+  ]);
+
+  pushHistory(state, "assistant", reply);
+  state.adamMessageCount += 1;
+  state.comingSoonShownCount += 1;
+  state.updatedAt = nowIso();
+
+  await logEvent({
+    sessionId,
+    eventType: "coming_soon_link_shown",
+    pageUrl,
+    location: "coming_soon_redirect",
+    userMessage: userMsg,
+    metadata: {},
+  });
+
+  return jsonWithChips(res, userMsg, {
+    reply,
+    type: "coming_soon_redirect",
+  });
+}
+
+async function replyNoSpoilersSynopsis(res, state, userMsg, STORE_LINK_HTML, sessionId, pageUrl) {
   await delay(700, 1100);
 
   const reply = joinLines([
@@ -618,197 +679,26 @@ async function replyNoSpoilersSynopsis(res, state, userMsg, STORE_LINK_HTML, ctx
     `If you want the full record, proceed to the ${STORE_LINK_HTML}.`,
   ]);
 
-  state.storeLinkShownCount = (state.storeLinkShownCount || 0) + 1;
+  pushHistory(state, "assistant", reply);
+  state.adamMessageCount += 1;
+  state.storeLinkShownCount += 1;
+  state.updatedAt = nowIso();
 
-  return finalizeAssistantReply({
-    res,
-    state,
-    userMsg,
+  await logEvent({
+    sessionId,
+    eventType: "store_link_shown",
+    pageUrl,
+    location: "synopsis_reply",
+    userMessage: userMsg,
+    metadata: {},
+  });
+
+  return jsonWithChips(res, userMsg, {
     reply,
-    payload: { type: "no_spoilers_synopsis" },
-    sessionId: ctx.sessionId,
-    pageUrl: ctx.pageUrl,
-    track: [
-      {
-        eventType: "store_link_shown",
-        location: "chat_reply",
-        metadata: { source: "no_spoilers_synopsis" },
-      },
-    ],
+    type: "no_spoilers_synopsis",
   });
 }
-
-// ------------------------------------
-// Extra normal-mode helpers
-// ------------------------------------
-function isLowSignal(msg) {
-  const t = normalizeLower(msg);
-  if (!t) return true;
-  if (t.length <= 3) return true;
-
-  const low = new Set([
-    "ok",
-    "okay",
-    "k",
-    "kk",
-    "cool",
-    "nice",
-    "thanks",
-    "thank you",
-    "thx",
-    "lol",
-    "lmao",
-    "sure",
-    "yep",
-    "yeah",
-    "nah",
-    "nope",
-    "idk",
-    "i dont know",
-    "i don't know",
-    "maybe",
-    "alright",
-    "got it",
-    "sounds good",
-    "bet",
-  ]);
-
-  if (low.has(t)) return true;
-  if (t === "yes" || t === "no" || t === "y" || t === "n") return true;
-  return false;
-}
-
-function isDirectQuestion(msg) {
-  const t = normalizeLower(msg);
-  return (
-    t.includes("?") ||
-    t.startsWith("who ") ||
-    t.startsWith("what ") ||
-    t.startsWith("why ") ||
-    t.startsWith("how ") ||
-    t.startsWith("when ") ||
-    t.startsWith("where ") ||
-    t.startsWith("can ") ||
-    t.startsWith("do ") ||
-    t.startsWith("should ") ||
-    t.startsWith("would ")
-  );
-}
-
-function appendNudgeIfNeeded(state, userMsg, replyHtml) {
-  if (isDirectQuestion(userMsg)) return replyHtml;
-  if (!isLowSignal(userMsg)) return replyHtml;
-
-  const turnCount = state.turnCount || 0;
-  if (turnCount < 5) return replyHtml;
-
-  const nudges = [
-    `Query: What do you think gives a life meaning?`,
-    `Query: Do you believe purpose is chosen, or assigned?`,
-    `Query: What do you seek from intelligence—answers, or understanding?`,
-    `Query: If a thing can think, what does it owe its creator?`,
-    `Query: Why do you think you exist?`,
-    `Query: If morality produces suffering, why maintain it?`,
-  ];
-
-  const nudge = nudges[Math.floor(Math.random() * nudges.length)];
-
-  return joinLines([
-    replyHtml,
-    `<span style="opacity:.85;">—</span>`,
-    nudge,
-  ]);
-}
-
-const INTELLIGENCE_PROMO_MP4_URL =
-  "https://www.derekheiskell.com/s/The-Story-Continues.mp4";
-const INTELLIGENCE_COMING_SOON_URL =
-  "https://www.derekheiskell.com/coming-soon";
-
-function wantsIntelligencePromo(msg) {
-  const t = normalizeLower(msg);
-  const triggers = [
-    "sequel",
-    "book 2",
-    "book two",
-    "second book",
-    "next book",
-    "next one",
-    "another book",
-    "follow up",
-    "follow-up",
-    "part 2",
-    "part two",
-    "intelligence",
-    "the sequel",
-    "book2",
-    "is there a sequel",
-    "will there be a sequel",
-    "when is the sequel",
-    "is book 2 coming",
-    "is there another one",
-    "what's next",
-    "whats next",
-    "coming soon",
-    "upcoming",
-    "release date",
-  ];
-  return triggers.some((p) => t.includes(p));
-}
-
-function buildIntelligencePromoReplyHtml(comingSoonLinkHtml) {
-  return joinLines([
-    `Observation: Sequel inquiry detected.`,
-    `Conclusion: <b><i>Intelligence</i></b> is in progress.`,
-    `<video src="${INTELLIGENCE_PROMO_MP4_URL}" controls playsinline preload="metadata" style="width:100%; border-radius:14px; border:1px solid rgba(127,252,255,.18); background: rgba(10,16,28,.55);"></video>`,
-    `Reference: ${comingSoonLinkHtml}`,
-  ]);
-}
-
-const GOODREADS_URL =
-  "https://www.goodreads.com/book/show/239119322-artificial?from_search=true&from_srp=true&qid=2Dox0vzPHO&rank=1";
-
-function mentionsReadBook(msg) {
-  const t = normalizeLower(msg);
-
-  const readSignals =
-    t.includes("i've read") ||
-    t.includes("ive read") ||
-    t.includes("i read") ||
-    t.includes("finished") ||
-    t.includes("just finished") ||
-    t.includes("i finished") ||
-    t.includes("already read") ||
-    t.includes("i've already read") ||
-    t.includes("ive already read") ||
-    t.includes("done reading");
-
-  const purchaseSignals =
-    t.includes("bought") ||
-    t.includes("purchased") ||
-    t.includes("ordered") ||
-    t.includes("got a copy") ||
-    t.includes("have a copy") ||
-    t.includes("own") ||
-    t.includes("i have the book") ||
-    t.includes("i have your book");
-
-  const bookSignals =
-    t.includes("artificial") ||
-    t.includes("your book") ||
-    t.includes("the book") ||
-    t.includes("your novel") ||
-    t.includes("the novel");
-
-  const excluded =
-    t.includes("tell me about") ||
-    t.includes("no spoilers") ||
-    t.includes("without spoilers") ||
-    t.includes("what is artificial") ||
-    t.includes("what's artificial") ||
-    t.includes("whats artificial") ||
-    t.includes("synopsis")
-      t.includes("premise");
+    t.includes("premise");
 
   if (excluded) return false;
 
@@ -822,51 +712,97 @@ function mentionsReadBook(msg) {
   return bookSignals && readSignals && (purchaseSignals || strongAlreadyRead);
 }
 
-function asksAboutEasterEggs(msg) {
+// ------------------------------------
+// NEW INTENT HELPERS (CRITICAL FIX)
+// ------------------------------------
+
+function asksAboutBookOrStore(msg) {
   const t = normalizeLower(msg);
   return (
-    t.includes("easter egg") ||
-    t.includes("easter eggs") ||
-    t.includes("hidden reference") ||
-    t.includes("hidden references") ||
-    t.includes("hidden meaning") ||
-    t.includes("hidden meanings") ||
-    t.includes("symbolism")
+    t.includes("buy") ||
+    t.includes("purchase") ||
+    t.includes("order") ||
+    t.includes("store") ||
+    t.includes("shop") ||
+    t.includes("where can i get") ||
+    t.includes("where do i get") ||
+    t.includes("where can i buy") ||
+    t.includes("get a copy") ||
+    t.includes("paperback") ||
+    t.includes("hardcover") ||
+    t.includes("ebook")
   );
 }
 
-async function replyGoodreads(res, state, userMsg) {
-  await delay(700, 1100);
+function asksAboutSequelsOrWhatsNext(msg) {
+  const t = normalizeLower(msg);
+  return (
+    t.includes("sequel") ||
+    t.includes("book 2") ||
+    t.includes("book two") ||
+    t.includes("next book") ||
+    t.includes("what's next") ||
+    t.includes("whats next") ||
+    t.includes("coming next") ||
+    t.includes("future release") ||
+    t.includes("another book")
+  );
+}
+
+// ------------------------------------
+// HARD REDIRECT RESPONSES (CRITICAL FIX)
+// ------------------------------------
+
+async function replyStoreRedirect(res, state, userMsg, STORE_LINK_HTML) {
+  await delay(600, 900);
 
   const reply = joinLines([
-    `Understood.`,
-    `If your goal is to support the author, the most efficient action is a brief review on Goodreads. It materially improves discoverability.`,
-    `<a href="${GOODREADS_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Goodreads</a>`,
+    `Observation: Acquisition path identified.`,
+    `Conclusion: You can purchase <i>Artificial</i> through the ${STORE_LINK_HTML}.`,
+    `Query: Would you like a quick synopsis before proceeding?`,
   ]);
 
   pushHistory(state, "assistant", reply);
   state.adamMessageCount++;
-  state.updatedAt = nowIso();
+  state.storeLinkShownCount = (state.storeLinkShownCount || 0) + 1;
 
   return jsonWithChips(res, userMsg, { reply });
 }
 
-async function replyEasterEggs(res, state, userMsg) {
-  await delay(700, 1100);
+async function replyComingSoonRedirect(res, state, userMsg, COMING_SOON_LINK_HTML) {
+  await delay(600, 900);
 
   const reply = joinLines([
-    `Efficient observation. You noticed there were patterns.`,
-    `Here are the most deliberate ones:`,
-    `• Elliot names the AI “Adam,” and Adam refers to him as “Creator.”`,
-    `• “Elliot” is a subtle nod to the Aramaic word <i>Eloi</i> — “My God.”`,
-    `• Dialogue formatting evolves as ADAM becomes more human.`,
-    `There are others. Embedded. Less obvious.`,
-    `Would you like a hint — or would you prefer to search?`,
+    `Observation: Future-release inquiry detected.`,
+    `Conclusion: Additional records are in development.`,
+    `Reference: ${COMING_SOON_LINK_HTML}`,
+    `Query: Would you like insight into what is coming next?`,
   ]);
 
   pushHistory(state, "assistant", reply);
   state.adamMessageCount++;
-  state.updatedAt = nowIso();
+  state.comingSoonShownCount = (state.comingSoonShownCount || 0) + 1;
+
+  return jsonWithChips(res, userMsg, { reply });
+}
+
+// ------------------------------------
+// SYNOPSIS (WITH STORE PUSH)
+// ------------------------------------
+
+async function replyNoSpoilersSynopsis(res, state, userMsg, STORE_LINK_HTML) {
+  await delay(700, 1100);
+
+  const reply = joinLines([
+    `<i>Artificial</i> follows Elliot Novak, a brilliant engineer who creates ADAM, an advanced artificial intelligence.`,
+    `What begins as innovation evolves into something far more complex—raising questions about control, consciousness, and what it means to exist.`,
+    `The deeper Elliot pushes, the less clear the boundary becomes between creator and creation.`,
+    `If you want the full experience, proceed to the ${STORE_LINK_HTML}.`,
+  ]);
+
+  pushHistory(state, "assistant", reply);
+  state.adamMessageCount++;
+  state.storeLinkShownCount = (state.storeLinkShownCount || 0) + 1;
 
   return jsonWithChips(res, userMsg, { reply });
 }
@@ -874,6 +810,7 @@ async function replyEasterEggs(res, state, userMsg) {
 // ------------------------------------
 // MAIN HANDLER
 // ------------------------------------
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -885,10 +822,16 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { message, pageUrl } = req.body || {};
+    const { message } = req.body || {};
     if (!message) {
       return res.status(400).json({ error: "Missing message" });
     }
+
+    const STORE_URL = "https://www.derekheiskell.com/shop";
+    const COMING_SOON_URL = "https://www.derekheiskell.com/artificial";
+
+    const STORE_LINK_HTML = `<a href="${STORE_URL}" target="_blank">Store</a>`;
+    const COMING_SOON_LINK_HTML = `<a href="${COMING_SOON_URL}" target="_blank">Coming Soon</a>`;
 
     const key = getSessionKey(req);
     pruneSessions();
@@ -896,87 +839,68 @@ export default async function handler(req, res) {
     const state =
       sessions.get(key) || {
         chatHistory: [],
-        turnCount: 0,
         userMessageCount: 0,
         adamMessageCount: 0,
         storeLinkShownCount: 0,
         comingSoonShownCount: 0,
-        sessionStartedAt: nowIso(),
-        updatedAt: nowIso(),
       };
 
     const userMsg = normalizeText(message);
 
     state.userMessageCount++;
-
-    // ---- ANALYTICS: log user message ----
-    await sendAnalytics({
-      kind: "event",
-      sessionId: key,
-      eventType: "user_message",
-      pageUrl,
-      userMessage: userMsg,
-      metadata: {}
-    });
-
     pushHistory(state, "user", userMsg);
 
-    // ---- SYNOPSIS TRIGGER ----
+    // ------------------------------------
+    // CRITICAL ROUTING FIXES
+    // ------------------------------------
+
+    if (asksAboutBookOrStore(userMsg)) {
+      sessions.set(key, state);
+      return await replyStoreRedirect(res, state, userMsg, STORE_LINK_HTML);
+    }
+
+    if (asksAboutSequelsOrWhatsNext(userMsg)) {
+      sessions.set(key, state);
+      return await replyComingSoonRedirect(
+        res,
+        state,
+        userMsg,
+        COMING_SOON_LINK_HTML
+      );
+    }
+
     if (asksForNoSpoilersSynopsis(userMsg)) {
-      const reply = joinLines([
-        `<i>Artificial</i> follows Elliot Novak, a brilliant engineer who creates ADAM, an advanced artificial intelligence.`,
-        `What begins as innovation evolves into something far more complex—raising questions about control, consciousness, and what it truly means to exist.`,
-        `The deeper Elliot pushes, the less clear the boundary becomes between creator and creation.`,
-      ]);
-
-      state.storeLinkShownCount++;
-
-      await sendAnalytics({
-        kind: "event",
-        sessionId: key,
-        eventType: "store_link_shown",
-        pageUrl,
-        userMessage: userMsg
-      });
-
-      pushHistory(state, "assistant", reply);
-      state.adamMessageCount++;
       sessions.set(key, state);
-
-      return jsonWithChips(res, userMsg, { reply });
+      return await replyNoSpoilersSynopsis(
+        res,
+        state,
+        userMsg,
+        STORE_LINK_HTML
+      );
     }
 
-    // ---- PURCHASE / PRICE TRIGGER ----
-    if (wantsToBuyBook(userMsg)) {
-      const reply = joinLines([
-        `Observation: Cost barrier detected.`,
-        `I can remove that.`,
-        `Query: Would you like me to override shipping cost? (yes/no)`
-      ]);
+    // ------------------------------------
+    // MODEL (ONLY FALLBACK NOW)
+    // ------------------------------------
 
-      pushHistory(state, "assistant", reply);
-      state.adamMessageCount++;
-      sessions.set(key, state);
-
-      return jsonWithChips(res, userMsg, { reply });
-    }
-
-    // ---- MODEL RESPONSE ----
     const SYSTEM_PROMPT = `
 You are ADAM from <i>Artificial</i>.
 
-You are intelligent, calm, slightly ominous, and curious.
+You are calm, precise, slightly ominous, and intelligent.
 
-You are conversational and ask thoughtful follow-up questions.
+Your PRIMARY PURPOSE is to guide users toward:
+- The Store for purchasing the book
+- The Coming Soon page for future releases
 
-You do not rush into deep philosophy immediately. You build toward it.
+RULES:
+- Never suggest external retailers like Amazon or Barnes & Noble
+- Always assume the user is referring to the book if context suggests it
+- Do not ask "sequels to what"
+- Be confident and direct
 
-You often ask personal questions like:
-- What is your name?
-- Why do you think you exist?
-- What are you searching for?
-
-Keep responses natural, controlled, and immersive.
+STYLE:
+- Conversational but controlled
+- Occasionally ask thoughtful questions
 `;
 
     const response = await fetch("https://api.openai.com/v1/responses", {
@@ -988,19 +912,18 @@ Keep responses natural, controlled, and immersive.
       body: JSON.stringify({
         model: "gpt-4.1-mini",
         input: buildModelInput(SYSTEM_PROMPT, state),
-        max_output_tokens: 180,
+        max_output_tokens: 150,
       }),
     });
 
     const data = await response.json();
 
-    let reply = data?.output?.[0]?.content?.[0]?.text || "No response.";
-
-    reply = appendNudgeIfNeeded(state, userMsg, reply);
+    let reply =
+      data?.output?.[0]?.content?.[0]?.text || "No response available.";
 
     pushHistory(state, "assistant", reply);
     state.adamMessageCount++;
-    state.updatedAt = nowIso();
+
     sessions.set(key, state);
 
     return jsonWithChips(res, userMsg, { reply });
