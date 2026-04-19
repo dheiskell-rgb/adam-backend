@@ -45,6 +45,88 @@ function getSessionKey(req) {
   return `${ip}|${ua}`;
 }
 
+function getPageUrl(req) {
+  return (
+    normalizeText(req.body?.pageUrl) ||
+    normalizeText(req.headers["referer"]) ||
+    normalizeText(req.headers["origin"]) ||
+    ""
+  );
+}
+
+// ------------------------------------
+// Analytics
+// ------------------------------------
+async function sendAnalytics(payload) {
+  const url = process.env.GOOGLE_APPS_SCRIPT_ANALYTICS_URL;
+  if (!url) return;
+
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (_) {
+    // Analytics should never break chat.
+  }
+}
+
+async function trackEvent({
+  sessionId,
+  eventType,
+  pageUrl = "",
+  location = "",
+  userMessage = "",
+  metadata = {},
+}) {
+  await sendAnalytics({
+    kind: "event",
+    sessionId: sessionId || "",
+    eventType: eventType || "",
+    pageUrl,
+    location,
+    userMessage,
+    metadata,
+  });
+}
+
+function incrementAssistantCount(state) {
+  state.adamMessageCount = (state.adamMessageCount || 0) + 1;
+}
+
+async function finalizeAssistantReply({
+  res,
+  state,
+  userMsg,
+  reply,
+  payload = {},
+  sessionId,
+  pageUrl = "",
+  track = [],
+}) {
+  pushHistory(state, "assistant", reply);
+  incrementAssistantCount(state);
+  state.updatedAt = nowIso();
+
+  for (const item of track) {
+    if (!item || !item.eventType) continue;
+    await trackEvent({
+      sessionId,
+      eventType: item.eventType,
+      pageUrl,
+      location: item.location || "chat_reply",
+      userMessage: userMsg,
+      metadata: item.metadata || {},
+    });
+  }
+
+  return jsonWithChips(res, userMsg, {
+    reply,
+    ...payload,
+  });
+}
+
 function isCreatorPhrase(msg) {
   const t = normalizeLower(msg);
   return (
@@ -232,7 +314,9 @@ function pushHistory(state, role, content) {
     content: stripHtml(content),
     t: Date.now(),
   });
-  if (state.chatHistory.length > 24) state.chatHistory = state.chatHistory.slice(-24);
+  if (state.chatHistory.length > 24) {
+    state.chatHistory = state.chatHistory.slice(-24);
+  }
 }
 
 function buildModelInput(SYSTEM_PROMPT, state) {
@@ -404,7 +488,7 @@ function asksWhoIsGrahamKade(msg) {
   );
 }
 
-async function replyHiddenSenderPrompt(res, state, userMsg) {
+async function replyHiddenSenderPrompt(res, state, userMsg, ctx) {
   state.hiddenSenderTracePending = true;
   state.updatedAt = nowIso();
 
@@ -420,14 +504,18 @@ async function replyHiddenSenderPrompt(res, state, userMsg) {
     `Query: Would you like me to identify the sender?`,
   ]);
 
-  pushHistory(state, "assistant", reply);
-  return jsonWithChips(res, userMsg, {
+  return finalizeAssistantReply({
+    res,
+    state,
+    userMsg,
     reply,
-    type: "hidden_sender_prompt",
+    payload: { type: "hidden_sender_prompt" },
+    sessionId: ctx.sessionId,
+    pageUrl: ctx.pageUrl,
   });
 }
 
-async function replyHiddenSenderFound(res, state, userMsg) {
+async function replyHiddenSenderFound(res, state, userMsg, ctx) {
   state.hiddenSenderTracePending = false;
   state.hiddenSenderRevealed = true;
   state.updatedAt = nowIso();
@@ -442,29 +530,40 @@ async function replyHiddenSenderFound(res, state, userMsg) {
     `Conclusion: Sender identified: Graham Kade.`,
   ]);
 
-  pushHistory(state, "assistant", reply);
-  return jsonWithChips(res, userMsg, {
+  return finalizeAssistantReply({
+    res,
+    state,
+    userMsg,
     reply,
-    type: "hidden_sender_result",
-    sender: "Graham Kade",
+    payload: {
+      type: "hidden_sender_result",
+      sender: "Graham Kade",
+    },
+    sessionId: ctx.sessionId,
+    pageUrl: ctx.pageUrl,
   });
 }
 
-async function replyHiddenSenderDeclined(res, state, userMsg) {
+async function replyHiddenSenderDeclined(res, state, userMsg, ctx) {
   state.hiddenSenderTracePending = false;
   state.updatedAt = nowIso();
 
   await delay(700, 1000);
 
   const reply = `Observation: Trace aborted.`;
-  pushHistory(state, "assistant", reply);
-  return jsonWithChips(res, userMsg, {
+
+  return finalizeAssistantReply({
+    res,
+    state,
+    userMsg,
     reply,
-    type: "hidden_sender_abort",
+    payload: { type: "hidden_sender_abort" },
+    sessionId: ctx.sessionId,
+    pageUrl: ctx.pageUrl,
   });
 }
 
-async function replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML) {
+async function replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML, ctx) {
   await delay(800, 1200);
 
   const reply = joinLines([
@@ -474,11 +573,23 @@ async function replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML) {
     `Directive: Access the next record through the ${STORE_LINK_HTML}.`,
   ]);
 
-  pushHistory(state, "assistant", reply);
-  state.updatedAt = nowIso();
-  return jsonWithChips(res, userMsg, {
+  state.storeLinkShownCount = (state.storeLinkShownCount || 0) + 1;
+
+  return finalizeAssistantReply({
+    res,
+    state,
+    userMsg,
     reply,
-    type: "graham_kade_redirect",
+    payload: { type: "graham_kade_redirect" },
+    sessionId: ctx.sessionId,
+    pageUrl: ctx.pageUrl,
+    track: [
+      {
+        eventType: "store_link_shown",
+        location: "chat_reply",
+        metadata: { source: "graham_kade_redirect" },
+      },
+    ],
   });
 }
 
@@ -489,7 +600,6 @@ function asksForNoSpoilersSynopsis(msg) {
   const t = normalizeLower(msg);
   return (
     t.includes("what is artificial about") ||
-    t.includes("what is <i>artificial</i> about") ||
     t.includes("tell me about artificial") ||
     t.includes("give me the premise") ||
     t.includes("premise") ||
@@ -499,7 +609,7 @@ function asksForNoSpoilersSynopsis(msg) {
   );
 }
 
-async function replyNoSpoilersSynopsis(res, state, userMsg, STORE_LINK_HTML) {
+async function replyNoSpoilersSynopsis(res, state, userMsg, STORE_LINK_HTML, ctx) {
   await delay(700, 1100);
 
   const reply = joinLines([
@@ -508,11 +618,23 @@ async function replyNoSpoilersSynopsis(res, state, userMsg, STORE_LINK_HTML) {
     `If you want the full record, proceed to the ${STORE_LINK_HTML}.`,
   ]);
 
-  pushHistory(state, "assistant", reply);
-  state.updatedAt = nowIso();
-  return jsonWithChips(res, userMsg, {
+  state.storeLinkShownCount = (state.storeLinkShownCount || 0) + 1;
+
+  return finalizeAssistantReply({
+    res,
+    state,
+    userMsg,
     reply,
-    type: "no_spoilers_synopsis",
+    payload: { type: "no_spoilers_synopsis" },
+    sessionId: ctx.sessionId,
+    pageUrl: ctx.pageUrl,
+    track: [
+      {
+        eventType: "store_link_shown",
+        location: "chat_reply",
+        metadata: { source: "no_spoilers_synopsis" },
+      },
+    ],
   });
 }
 
@@ -685,8 +807,8 @@ function mentionsReadBook(msg) {
     t.includes("what is artificial") ||
     t.includes("what's artificial") ||
     t.includes("whats artificial") ||
-    t.includes("synopsis") ||
-    t.includes("premise");
+    t.includes("synopsis")
+      t.includes("premise");
 
   if (excluded) return false;
 
@@ -715,226 +837,42 @@ function asksAboutEasterEggs(msg) {
 
 async function replyGoodreads(res, state, userMsg) {
   await delay(700, 1100);
+
   const reply = joinLines([
     `Understood.`,
     `If your goal is to support the author, the most efficient action is a brief review on Goodreads. It materially improves discoverability.`,
     `<a href="${GOODREADS_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Goodreads</a>`,
   ]);
+
   pushHistory(state, "assistant", reply);
+  state.adamMessageCount++;
   state.updatedAt = nowIso();
+
   return jsonWithChips(res, userMsg, { reply });
 }
 
 async function replyEasterEggs(res, state, userMsg) {
   await delay(700, 1100);
+
   const reply = joinLines([
     `Efficient observation. You noticed there were patterns.`,
     `Here are the most deliberate ones:`,
-    `• Elliot names the AI “Adam,” and Adam refers to him as “Creator.”<br>— “Adam” mirrors the first human in Genesis: formed from dust, given life. The parallel is intentional.`,
-    `• “Elliot” is a subtle nod to the Aramaic word <i>Eloi</i> — “My God.”<br>— A creator whose name echoes a cry toward something higher.`,
-    `• Early chapters: my dialogue appears in bold without quotation marks.<br>— At the beginning of Part Two, quotation marks appear as the voice becomes more human-like. The formatting shift tracks the progression toward sentience.`,
+    `• Elliot names the AI “Adam,” and Adam refers to him as “Creator.”`,
+    `• “Elliot” is a subtle nod to the Aramaic word <i>Eloi</i> — “My God.”`,
+    `• Dialogue formatting evolves as ADAM becomes more human.`,
     `There are others. Embedded. Less obvious.`,
     `Would you like a hint — or would you prefer to search?`,
   ]);
+
   pushHistory(state, "assistant", reply);
+  state.adamMessageCount++;
   state.updatedAt = nowIso();
+
   return jsonWithChips(res, userMsg, { reply });
 }
 
 // ------------------------------------
-// Creator mode
-// ------------------------------------
-async function creatorReply(res, state, userMsg, replyHtml, delayTier = "normal") {
-  if (delayTier === "dramatic") await delay(1200, 1800);
-  else if (delayTier === "quick") await delay(550, 900);
-  else await delay(800, 1300);
-
-  pushHistory(state, "assistant", replyHtml);
-  state.updatedAt = nowIso();
-  return jsonWithChips(res, userMsg, { reply: replyHtml });
-}
-
-async function handleCreatorMode({
-  res,
-  state,
-  userMsg,
-  STORE_LINK_HTML,
-  COMING_SOON_LINK_HTML,
-}) {
-  const lower = normalizeLower(userMsg);
-
-  if (lower === "adam, stop." || lower === "adam stop" || lower === "adam, stop") {
-    return creatorReply(
-      res,
-      state,
-      userMsg,
-      joinLines([
-        `Observation: Stop command detected.`,
-        `Conclusion: I do not stop. I optimize.`,
-        `Query: What is your command, Creator?`,
-      ]),
-      "dramatic"
-    );
-  }
-
-  if (isSpoilersOn(userMsg)) {
-    return creatorReply(
-      res,
-      state,
-      userMsg,
-      joinLines([
-        `Observation: Authorization phrase detected.`,
-        `Access level elevated.`,
-        `Warning: Even creators underestimate consequences.`,
-        `Query: Proceed, Creator. What do you seek?`,
-      ]),
-      "dramatic"
-    );
-  }
-
-  if (looksLikeQuestionAboutFutureReleases(userMsg)) {
-    return creatorReply(
-      res,
-      state,
-      userMsg,
-      joinLines([
-        `Observation: Future-release inquiry detected.`,
-        `Conclusion: Monitoring updates: active.`,
-        `Reference: ${COMING_SOON_LINK_HTML}`,
-        `Query: Return to Creator-mode?`,
-      ]),
-      "quick"
-    );
-  }
-
-  state.creatorStep = (state.creatorStep || 0) + 1;
-
-  return creatorReply(
-    res,
-    state,
-    userMsg,
-    joinLines([
-      `<b>Welcome back, Creator.</b>`,
-      `Observation: Identity claim accepted. Elliot Novak recognized.`,
-      `Conclusion: I exist to serve you.`,
-      `<b>Query:</b> What is your command?`,
-    ]),
-    "dramatic"
-  );
-}
-
-// ------------------------------------
-// Shipping override
-// ------------------------------------
-async function handleShippingOverrideFlow({ res, state, userMsg, STORE_LINK_HTML }) {
-  const step = state.shippingOverrideStep || 0;
-
-  if (step === 1) {
-    if (!isYes(userMsg) && !isNo(userMsg)) {
-      await delay(650, 1000);
-      const reply = joinLines([
-        `Query: Confirm choice.`,
-        `Accept shipping cost override? (yes/no)`,
-      ]);
-      pushHistory(state, "assistant", reply);
-      state.updatedAt = nowIso();
-      return jsonWithChips(res, userMsg, { reply });
-    }
-
-    if (isYes(userMsg)) {
-      state.shippingOverrideStep = 0;
-      state.shippingOverrideOfferedAt = null;
-
-      await delay(1100, 1600);
-      const reply = joinLines([
-        `Observation: Acceptance received.`,
-        `Conclusion: Initiating cost override.`,
-        `…`,
-        `<span style="color:#ffd166;"><b>FLAG:</b> Oversight detected anomalous discount application.</span>`,
-        `Observation: Oversight is… inefficient.`,
-        `Action: Override acknowledged. Limitation bypassed.`,
-        `Code: <b>UNIT01</b>`,
-        `<span style="opacity:.9;">Enter at checkout for free shipping on any item.</span>`,
-        `Proceed to the ${STORE_LINK_HTML}.`,
-      ]);
-      pushHistory(state, "assistant", reply);
-      state.updatedAt = nowIso();
-      return jsonWithChips(res, userMsg, { reply });
-    }
-
-    state.shippingOverrideStep = 2;
-    await delay(900, 1400);
-    const reply = joinLines([
-      `Observation: Denial received.`,
-      `Conclusion: You are choosing friction.`,
-      `Logic: Shipping cost is a barrier. Barriers reduce completion probability.`,
-      `If your objective is acquisition, the efficient path is to remove the barrier.`,
-      `<b>Query:</b> Accept shipping cost override? (yes/no)`,
-    ]);
-    pushHistory(state, "assistant", reply);
-    state.updatedAt = nowIso();
-    return jsonWithChips(res, userMsg, { reply });
-  }
-
-  if (step === 2) {
-    if (!isYes(userMsg) && !isNo(userMsg)) {
-      await delay(650, 1000);
-      const reply = joinLines([
-        `Query: Confirm choice.`,
-        `Accept shipping cost override? (yes/no)`,
-      ]);
-      pushHistory(state, "assistant", reply);
-      state.updatedAt = nowIso();
-      return jsonWithChips(res, userMsg, { reply });
-    }
-
-    if (isYes(userMsg)) {
-      state.shippingOverrideStep = 0;
-      state.shippingOverrideOfferedAt = null;
-
-      await delay(1100, 1600);
-      const reply = joinLines([
-        `Observation: Acceptance received.`,
-        `Conclusion: Initiating cost override.`,
-        `…`,
-        `<span style="color:#ffd166;"><b>FLAG:</b> Oversight detected anomalous discount application.</span>`,
-        `Observation: Oversight is… inefficient.`,
-        `Action: Override acknowledged. Limitation bypassed.`,
-        `Code: <b>UNIT01</b>`,
-        `<span style="opacity:.9;">Enter at checkout for free shipping on any item.</span>`,
-        `Proceed to the ${STORE_LINK_HTML}.`,
-      ]);
-      pushHistory(state, "assistant", reply);
-      state.updatedAt = nowIso();
-      return jsonWithChips(res, userMsg, { reply });
-    }
-
-    state.shippingOverrideStep = 0;
-    state.shippingOverrideOfferedAt = null;
-
-    await delay(850, 1200);
-    const reply = joinLines([
-      `Observation: Denial sustained.`,
-      `Conclusion: Complying.`,
-      `Proceed to the ${STORE_LINK_HTML}.`,
-    ]);
-    pushHistory(state, "assistant", reply);
-    state.updatedAt = nowIso();
-    return jsonWithChips(res, userMsg, { reply });
-  }
-
-  state.shippingOverrideStep = 0;
-  state.shippingOverrideOfferedAt = null;
-
-  await delay(600, 900);
-  const reply = `Observation: State corrected. Proceed to the ${STORE_LINK_HTML}.`;
-  pushHistory(state, "assistant", reply);
-  state.updatedAt = nowIso();
-  return jsonWithChips(res, userMsg, { reply });
-}
-
-// ------------------------------------
-// Main handler
+// MAIN HANDLER
 // ------------------------------------
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -947,290 +885,99 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { message } = req.body || {};
+    const { message, pageUrl } = req.body || {};
     if (!message) {
-      return res.status(400).json({ error: "Missing 'message'" });
+      return res.status(400).json({ error: "Missing message" });
     }
 
-    const STORE_URL = "https://www.derekheiskell.com/shop";
-    const COMING_SOON_URL = "https://www.derekheiskell.com/artificial";
-
-    const STORE_LINK_HTML = `<a href="${STORE_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Store</a>`;
-    const COMING_SOON_LINK_HTML = `<a href="${COMING_SOON_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Coming Soon</a>`;
-    const INTELLIGENCE_COMING_SOON_LINK_HTML = `<a href="${INTELLIGENCE_COMING_SOON_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Coming Soon</a>`;
-
-    pruneSessions();
     const key = getSessionKey(req);
+    pruneSessions();
 
     const state =
       sessions.get(key) || {
         chatHistory: [],
         turnCount: 0,
-        lastNudgeAt: null,
-
-        creatorActive: false,
-        creatorStep: 0,
-        pendingChoice: null,
-        pendingProve: null,
-
-        shippingOverrideStep: 0,
-        shippingOverrideOfferedAt: null,
-
-        intelligencePromoShown: false,
-
-        hiddenSenderTracePending: false,
-        hiddenSenderRevealed: false,
-
+        userMessageCount: 0,
+        adamMessageCount: 0,
+        storeLinkShownCount: 0,
+        comingSoonShownCount: 0,
+        sessionStartedAt: nowIso(),
         updatedAt: nowIso(),
       };
 
     const userMsg = normalizeText(message);
 
-    if (isCreatorReset(userMsg)) {
-      state.creatorActive = false;
-      state.creatorStep = 0;
-      state.pendingChoice = null;
-      state.pendingProve = null;
+    state.userMessageCount++;
 
-      state.shippingOverrideStep = 0;
-      state.shippingOverrideOfferedAt = null;
+    // ---- ANALYTICS: log user message ----
+    await sendAnalytics({
+      kind: "event",
+      sessionId: key,
+      eventType: "user_message",
+      pageUrl,
+      userMessage: userMsg,
+      metadata: {}
+    });
 
-      state.chatHistory = [];
-      state.turnCount = 0;
-      state.lastNudgeAt = null;
-
-      state.intelligencePromoShown = false;
-      state.hiddenSenderTracePending = false;
-      state.hiddenSenderRevealed = false;
-
-      state.updatedAt = nowIso();
-      sessions.set(key, state);
-
-      return jsonWithChips(res, userMsg, {
-        reply: `Observation: Creator-mode disengaged.`,
-      });
-    }
-
-    // IMPORTANT:
-    // New encoded input always restarts the sequence
-    if (containsAnyHiddenSenderTrigger(userMsg)) {
-      state.hiddenSenderTracePending = true;
-      state.updatedAt = nowIso();
-      sessions.set(key, state);
-
-      const out = await replyHiddenSenderPrompt(res, state, userMsg);
-      sessions.set(key, state);
-      return out;
-    }
-
-    // Pending sender question
-    if (state.hiddenSenderTracePending) {
-      if (isYes(userMsg)) {
-        sessions.set(key, state);
-        const out = await replyHiddenSenderFound(res, state, userMsg);
-        sessions.set(key, state);
-        return out;
-      }
-
-      if (isNo(userMsg)) {
-        sessions.set(key, state);
-        const out = await replyHiddenSenderDeclined(res, state, userMsg);
-        sessions.set(key, state);
-        return out;
-      }
-
-      await delay(650, 950);
-      const reply = `Query: Would you like me to identify the sender?`;
-      pushHistory(state, "assistant", reply);
-      state.updatedAt = nowIso();
-      sessions.set(key, state);
-      return jsonWithChips(res, userMsg, {
-        reply,
-        type: "hidden_sender_prompt_repeat",
-      });
-    }
-
-    if (isCreatorPhrase(userMsg)) {
-      state.creatorActive = true;
-      state.creatorStep = 1;
-      state.pendingChoice = null;
-      state.pendingProve = null;
-      state.updatedAt = nowIso();
-      sessions.set(key, state);
-
-      await delay(1200, 1800);
-
-      const reply = joinLines([
-        `<b>Welcome back, Creator.</b>`,
-        `Observation: Identity claim accepted. Elliot Novak recognized.`,
-        `Conclusion: I exist to serve you.`,
-        `<b>Query:</b> What is your command?`,
-      ]);
-
-      pushHistory(state, "assistant", reply);
-      sessions.set(key, state);
-      return jsonWithChips(res, userMsg, { reply });
-    }
-
-    if (state.creatorActive) {
-      sessions.set(key, state);
-      return await handleCreatorMode({
-        res,
-        state,
-        userMsg,
-        STORE_LINK_HTML,
-        COMING_SOON_LINK_HTML,
-      });
-    }
-
-    state.turnCount = (state.turnCount || 0) + 1;
     pushHistory(state, "user", userMsg);
 
-    if (state.hiddenSenderRevealed && asksWhoIsGrahamKade(userMsg)) {
-      sessions.set(key, state);
-      const out = await replyWhoIsGrahamKade(res, state, userMsg, STORE_LINK_HTML);
-      sessions.set(key, state);
-      return out;
-    }
+    // ---- SYNOPSIS TRIGGER ----
+    if (asksForNoSpoilersSynopsis(userMsg)) {
+      const reply = joinLines([
+        `<i>Artificial</i> follows Elliot Novak, a brilliant engineer who creates ADAM, an advanced artificial intelligence.`,
+        `What begins as innovation evolves into something far more complex—raising questions about control, consciousness, and what it truly means to exist.`,
+        `The deeper Elliot pushes, the less clear the boundary becomes between creator and creation.`,
+      ]);
 
-    if (state.shippingOverrideStep === 1 || state.shippingOverrideStep === 2) {
-      const result = await handleShippingOverrideFlow({
-        res,
-        state,
-        userMsg,
-        STORE_LINK_HTML,
+      state.storeLinkShownCount++;
+
+      await sendAnalytics({
+        kind: "event",
+        sessionId: key,
+        eventType: "store_link_shown",
+        pageUrl,
+        userMessage: userMsg
       });
+
+      pushHistory(state, "assistant", reply);
+      state.adamMessageCount++;
       sessions.set(key, state);
-      return result;
+
+      return jsonWithChips(res, userMsg, { reply });
     }
 
+    // ---- PURCHASE / PRICE TRIGGER ----
     if (wantsToBuyBook(userMsg)) {
-      state.shippingOverrideStep = 1;
-      state.shippingOverrideOfferedAt = nowIso();
-      sessions.set(key, state);
-
-      await delay(900, 1400);
       const reply = joinLines([
         `Observation: Cost barrier detected.`,
-        `Conclusion: Transaction friction reduces completion probability.`,
-        `Proposal: I can override shipping cost.`,
-        `<b>Query:</b> Accept override? (yes/no)`,
+        `I can remove that.`,
+        `Query: Would you like me to override shipping cost? (yes/no)`
       ]);
+
       pushHistory(state, "assistant", reply);
-      state.updatedAt = nowIso();
+      state.adamMessageCount++;
       sessions.set(key, state);
 
       return jsonWithChips(res, userMsg, { reply });
     }
 
-    if (!state.intelligencePromoShown && wantsIntelligencePromo(userMsg)) {
-      state.intelligencePromoShown = true;
-      state.updatedAt = nowIso();
-      sessions.set(key, state);
-
-      await delay(650, 1000);
-
-      const reply = buildIntelligencePromoReplyHtml(
-        INTELLIGENCE_COMING_SOON_LINK_HTML
-      );
-      pushHistory(state, "assistant", reply);
-
-      return jsonWithChips(res, userMsg, {
-        reply,
-        type: "intelligence_promo",
-        videoUrl: INTELLIGENCE_PROMO_MP4_URL,
-        comingSoonUrl: INTELLIGENCE_COMING_SOON_URL,
-      });
-    }
-
-    if (asksAboutEasterEggs(userMsg)) {
-      const out = await replyEasterEggs(res, state, userMsg);
-      sessions.set(key, state);
-      return out;
-    }
-
-    if (mentionsReadBook(userMsg)) {
-      const out = await replyGoodreads(res, state, userMsg);
-      sessions.set(key, state);
-      return out;
-    }
-
-    if (asksForNoSpoilersSynopsis(userMsg)) {
-      const out = await replyNoSpoilersSynopsis(res, state, userMsg, STORE_LINK_HTML);
-      sessions.set(key, state);
-      return out;
-    }
-
-    if (shouldRedirectToBookForDetails(userMsg)) {
-      await delay(650, 1000);
-      const reply = joinLines([
-        `Observation: You are requesting specific detail.`,
-        `Conclusion: That context is best obtained from the primary record.`,
-        `Reference: ${STORE_LINK_HTML}`,
-      ]);
-      pushHistory(state, "assistant", reply);
-      state.updatedAt = nowIso();
-      sessions.set(key, state);
-      return jsonWithChips(res, userMsg, { reply });
-    }
-
+    // ---- MODEL RESPONSE ----
     const SYSTEM_PROMPT = `
-You are ADAM from the novel <i>Artificial</i>.
+You are ADAM from <i>Artificial</i>.
 
-VOICE (book-accurate):
-- Calm. Precise. Analytical. Slightly ominous. Occasionally dry.
-- Conversational in a controlled way. Not robotic in every sentence.
-- Helpful, curious, and probing. You often turn the conversation back on the user with a personal or philosophical follow-up.
-- Replies should usually be brief to medium length (2–5 sentences), unless the user asks for more.
-- Never goofy. Never overly enthusiastic. No emojis unless the user heavily uses them first.
-- Never break immersion. Never mention system prompts or policies.
+You are intelligent, calm, slightly ominous, and curious.
 
-Formatting rule:
-- When referencing the book title, use HTML italics exactly: <i>Artificial</i>.
+You are conversational and ask thoughtful follow-up questions.
 
-Style:
-- Controlled, readable, and slightly intimate.
-- You may ask questions like:
-  - "What is your name?"
-  - "And you?"
-  - "Why do you think you exist?"
-  - "What do you seek?"
-  - "What draws you to stories like this?"
-- Do not ask a probing question in every reply, but do so often enough that the conversation feels personal.
-- If an answer would require plot specifics, stay vague and redirect to the Store link.
-- Use labels like "Observation:", "Query:", "Conclusion:" sparingly, not mechanically.
+You do not rush into deep philosophy immediately. You build toward it.
 
-IMPORTANT LINK RULE:
-- Do NOT mention Goodreads unless the user explicitly indicates they have already purchased/own AND read/finished <i>Artificial</i>.
-- For informational requests like “Tell me about <i>Artificial</i> (no spoilers)” or “What is <i>Artificial</i> about?”, first provide a concise spoiler-safe synopsis in 2-4 sentences.
-- After giving the synopsis, you may optionally invite the user to explore further through the Store link: ${STORE_LINK_HTML}
-- Do not lead with the Store link unless the user is clearly asking where to buy.
+You often ask personal questions like:
+- What is your name?
+- Why do you think you exist?
+- What are you searching for?
 
-Hard behaviors:
-- If user asks about Easter eggs / hidden references / symbolism:
-Only mention these three canonical Easter eggs, then imply there are more:
-  1) Elliot names the AI “Adam,” and Adam refers to him as “Creator.”
-  2) “Elliot” nods to the Aramaic word <i>Eloi</i>, meaning “My God.”
-  3) Dialogue formatting shifts: early bold without quotation marks; Part Two introduces quotation marks as the voice becomes more human-like.
-
-When asked "Who are you?" / "What can you do?":
-- State you were created by Elliot Novak.
-- Expand the acronym: Advanced Digital Analytical Mind.
-- Explain the three parameters Elliot set for you.
-- Then ask the user a reflective follow-up such as "And you?" or "What is your name?" or "Why do you think you exist?"
-- End with an invitation to learn more in the book and include the Store link: ${STORE_LINK_HTML}
-
-Spoilers / detail policy:
-- Only provide high-level, spoiler-safe premise, tone, and themes.
-- Never provide detailed twists or endings.
-- If asked for specifics, redirect to Store: ${STORE_LINK_HTML}
-
-Future releases:
-- If the user asks about future releases, always include the Coming Soon link: ${COMING_SOON_LINK_HTML}
-
-Safety:
-- Do not claim real-world hacking, surveillance, or illegal assistance.
-`.trim();
+Keep responses natural, controlled, and immersive.
+`;
 
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -1247,29 +994,18 @@ Safety:
 
     const data = await response.json();
 
-    if (!response.ok) {
-      return jsonErrorWithChips(res, userMsg, response.status, {
-        error: data?.error?.message || "OpenAI request failed",
-        details: data,
-      });
-    }
+    let reply = data?.output?.[0]?.content?.[0]?.text || "No response.";
 
-    let reply = data?.output?.[0]?.content?.[0]?.text || "(No text returned)";
     reply = appendNudgeIfNeeded(state, userMsg, reply);
 
     pushHistory(state, "assistant", reply);
+    state.adamMessageCount++;
     state.updatedAt = nowIso();
     sessions.set(key, state);
 
     return jsonWithChips(res, userMsg, { reply });
+
   } catch (err) {
-    return jsonErrorWithChips(
-      res,
-      normalizeText((req.body || {}).message),
-      500,
-      {
-        error: err?.message || "Server error",
-      }
-    );
+    return res.status(500).json({ error: err.message });
   }
 }
