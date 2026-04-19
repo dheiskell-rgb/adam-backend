@@ -75,20 +75,7 @@ function buildModelInput(systemPrompt, state) {
 
   return [{ role: "system", content: systemPrompt }, ...history];
 }
-async function sendAnalytics(payload) {
-  const url = process.env.GOOGLE_APPS_SCRIPT_ANALYTICS_URL;
-  if (!url) return;
 
-  try {
-    await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (_) {
-    // Never break chat because analytics failed
-  }
-}
 function extractResponseText(data) {
   if (typeof data?.output_text === "string" && data.output_text.trim()) {
     return data.output_text.trim();
@@ -112,6 +99,21 @@ function extractResponseText(data) {
   }
 
   return "(No text returned)";
+}
+
+async function sendAnalytics(payload) {
+  const url = process.env.GOOGLE_APPS_SCRIPT_ANALYTICS_URL;
+  if (!url) return;
+
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (_) {
+    // Never break chat because analytics failed
+  }
 }
 
 // ------------------------------------
@@ -1029,15 +1031,60 @@ export default async function handler(req, res) {
       });
     }
 
+    pruneSessions();
+    const key = getSessionKey(req);
+
+    const userMsg = normalizeText(message);
+
+    if (analytics?.eventType === "session_summary") {
+      await sendAnalytics({
+        kind: "session",
+        sessionId: key,
+        startedAt: sessionSummary?.startedAt || "",
+        endedAt: sessionSummary?.endedAt || "",
+        durationSeconds: sessionSummary?.durationSeconds || 0,
+        userMessageCount: sessionSummary?.userMessageCount || 0,
+        adamMessageCount: sessionSummary?.adamMessageCount || 0,
+      });
+
+      return res.status(200).json({ ok: true });
+    }
+
+    if (analytics?.eventType) {
+      await sendAnalytics({
+        kind: "event",
+        sessionId: key,
+        eventType: analytics.eventType,
+        pageUrl: pageUrl || "",
+        location: analytics.location || "",
+        userMessage: "",
+        metadata: {
+          ts: new Date().toISOString(),
+          ...analytics,
+        },
+      });
+
+      return res.status(200).json({ ok: true });
+    }
+
+    await sendAnalytics({
+      kind: "event",
+      sessionId: key,
+      eventType: "user_message",
+      pageUrl: pageUrl || "",
+      location: "chat",
+      userMessage: userMsg,
+      metadata: {
+        ts: new Date().toISOString(),
+      },
+    });
+
     const STORE_URL = "https://www.derekheiskell.com/shop";
     const COMING_SOON_URL = "https://www.derekheiskell.com/artificial";
 
     const STORE_LINK_HTML = `<a href="${STORE_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Store</a>`;
     const COMING_SOON_LINK_HTML = `<a href="${COMING_SOON_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Coming Soon</a>`;
     const INTELLIGENCE_COMING_SOON_LINK_HTML = `<a href="${INTELLIGENCE_COMING_SOON_URL}" target="_blank" rel="noopener" style="text-decoration:underline;">Coming Soon</a>`;
-
-    pruneSessions();
-    const key = getSessionKey(req);
 
     const state =
       sessions.get(key) || {
@@ -1053,67 +1100,6 @@ export default async function handler(req, res) {
         updatedAt: nowIso(),
       };
 
-    const userMsg = normalizeText(message);
-if (analytics?.eventType === "session_summary") {
-  await sendAnalytics({
-    kind: "session",
-    sessionId: key,
-    startedAt: sessionSummary?.startedAt || "",
-    endedAt: sessionSummary?.endedAt || "",
-    durationSeconds: sessionSummary?.durationSeconds || 0,
-    userMessageCount: sessionSummary?.userMessageCount || 0,
-    adamMessageCount: sessionSummary?.adamMessageCount || 0
-  });
-
-  return res.status(200).json({ ok: true });
-}
-
-if (analytics?.eventType) {
-  await sendAnalytics({
-    kind: "event",
-    sessionId: key,
-    eventType: analytics.eventType,
-    pageUrl: pageUrl || "",
-    location: analytics.location || "",
-    userMessage: "",
-    metadata: {
-      ts: new Date().toISOString(),
-      ...analytics,
-    },
-  });
-
-  return res.status(200).json({ ok: true });
-}
-}
-
-if (analytics?.eventType) {
-  await sendAnalytics({
-    kind: "event",
-    sessionId: key,
-    eventType: analytics.eventType,
-    pageUrl: pageUrl || "",
-    location: analytics.location || "",
-    userMessage: "",
-    metadata: {
-      ts: new Date().toISOString(),
-      ...analytics,
-    },
-  });
-
-  return res.status(200).json({ ok: true });
-}
-
-await sendAnalytics({
-  kind: "event",
-  sessionId: key,
-  eventType: "user_message",
-  pageUrl: pageUrl || "",
-  location: "chat",
-  userMessage: userMsg,
-  metadata: {
-    ts: new Date().toISOString(),
-  },
-});
     if (isCreatorReset(userMsg)) {
       state.creatorActive = false;
       state.creatorStep = 0;
@@ -1207,7 +1193,6 @@ await sendAnalytics({
       return out;
     }
 
-    // Continue an active free-shipping sequence first
     if (state.shippingOverrideStep === 1 || state.shippingOverrideStep === 2) {
       const result = await handleShippingOverrideFlow({
         res,
@@ -1219,7 +1204,6 @@ await sendAnalytics({
       return result;
     }
 
-    // IMPORTANT: free shipping trigger must happen before generic store routing
     if (wantsToBuyBook(userMsg)) {
       state.shippingOverrideStep = 1;
       state.shippingOverrideOfferedAt = nowIso();
