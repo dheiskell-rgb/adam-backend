@@ -61,6 +61,7 @@ function pushHistory(state, role, content) {
     content: stripHtml(content),
     t: Date.now(),
   });
+
   if (state.chatHistory.length > 24) {
     state.chatHistory = state.chatHistory.slice(-24);
   }
@@ -83,6 +84,7 @@ function extractResponseText(data) {
   const output = data?.output;
   if (Array.isArray(output)) {
     const texts = [];
+
     for (const item of output) {
       if (Array.isArray(item?.content)) {
         for (const c of item.content) {
@@ -92,6 +94,7 @@ function extractResponseText(data) {
         }
       }
     }
+
     if (texts.length) return texts.join("\n\n");
   }
 
@@ -224,6 +227,22 @@ function asksAboutSequelsOrWhatsNext(msg) {
 function wantsToBuyBook(msg) {
   const t = normalizeLower(msg);
 
+  const directPriceIntent =
+    t.includes("discount") ||
+    t.includes("coupon") ||
+    t.includes("promo code") ||
+    t.includes("promo") ||
+    t.includes("sale") ||
+    t.includes("deal") ||
+    t.includes("cheaper") ||
+    t.includes("price") ||
+    t.includes("cost") ||
+    t.includes("how much") ||
+    t.includes("free shipping") ||
+    t.includes("shipping");
+
+  if (directPriceIntent) return true;
+
   const mentionsBook =
     t.includes("artificial") ||
     t.includes("the book") ||
@@ -247,17 +266,7 @@ function wantsToBuyBook(msg) {
     t.includes("im going to buy") ||
     t.includes("i will buy") ||
     t.includes("i'll buy") ||
-    t.includes("shipping") ||
-    t.includes("delivery") ||
-    t.includes("price") ||
-    t.includes("cost") ||
-    t.includes("how much") ||
-    t.includes("discount") ||
-    t.includes("coupon") ||
-    t.includes("promo code") ||
-    t.includes("sale") ||
-    t.includes("deal") ||
-    t.includes("cheaper");
+    t.includes("delivery");
 
   return mentionsBook && purchaseIntent;
 }
@@ -996,6 +1005,7 @@ export default async function handler(req, res) {
 
   try {
     const { message } = req.body || {};
+
     if (!message) {
       return res.status(400).json({ error: "Missing 'message'" });
     }
@@ -1125,6 +1135,7 @@ export default async function handler(req, res) {
       return out;
     }
 
+    // Continue an active free-shipping sequence first
     if (state.shippingOverrideStep === 1 || state.shippingOverrideStep === 2) {
       const result = await handleShippingOverrideFlow({
         res,
@@ -1136,7 +1147,7 @@ export default async function handler(req, res) {
       return result;
     }
 
-    // IMPORTANT: free shipping / discount flow must happen BEFORE generic store routing
+    // IMPORTANT: free shipping trigger must happen before generic store routing
     if (wantsToBuyBook(userMsg)) {
       state.shippingOverrideStep = 1;
       state.shippingOverrideOfferedAt = nowIso();
@@ -1156,7 +1167,6 @@ export default async function handler(req, res) {
       return jsonWithChips(res, userMsg, { reply });
     }
 
-    // High-priority hard routes
     if (asksAboutBookOrStore(userMsg)) {
       sessions.set(key, state);
       const out = await replyStoreRedirect(res, state, userMsg, STORE_LINK_HTML);
