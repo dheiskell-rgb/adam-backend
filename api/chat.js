@@ -41,10 +41,7 @@ function stripHtml(html) {
     .trim();
 }
 
-function getSessionKey(req) {
-  const bodySessionId = req.body?.sessionId;
-  if (bodySessionId) return `session:${bodySessionId}`;
-
+function getFallbackFingerprint(req) {
   const ip =
     (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
     req.socket?.remoteAddress ||
@@ -52,6 +49,14 @@ function getSessionKey(req) {
 
   const ua = req.headers["user-agent"] || "unknown_ua";
   return `${ip}|${ua}`;
+}
+
+function getSessionKey(req) {
+  const bodySessionId = req.body?.sessionId;
+  if (bodySessionId) return `session:${bodySessionId}`;
+
+  const fallback = getFallbackFingerprint(req);
+  return `fallback:${fallback}`;
 }
 
 function pushHistory(state, role, content) {
@@ -1019,7 +1024,20 @@ export default async function handler(req, res) {
   }
 
   try {
+    const parsedBody =
+      typeof req.body === "string"
+        ? JSON.parse(req.body || "{}")
+        : req.body || {};
+
+    req.body = parsedBody;
+
     const { message, pageUrl, analytics, sessionSummary } = req.body || {};
+    const frontendSessionId = req.body?.sessionId || "missing_session_id";
+    req.body.sessionId = frontendSessionId;
+
+    const fallbackFingerprint = getFallbackFingerprint(req);
+    const analyticsSessionId = frontendSessionId;
+    const key = getSessionKey(req);
 
     if (!message) {
       return res.status(400).json({ error: "Missing 'message'" });
@@ -1032,14 +1050,13 @@ export default async function handler(req, res) {
     }
 
     pruneSessions();
-    const key = getSessionKey(req);
 
     const userMsg = normalizeText(message);
 
     if (analytics?.eventType === "session_summary") {
       await sendAnalytics({
         kind: "session",
-        sessionId: key,
+        sessionId: analyticsSessionId,
         startedAt: sessionSummary?.startedAt || "",
         endedAt: sessionSummary?.endedAt || "",
         durationSeconds: sessionSummary?.durationSeconds || 0,
@@ -1053,13 +1070,14 @@ export default async function handler(req, res) {
     if (analytics?.eventType) {
       await sendAnalytics({
         kind: "event",
-        sessionId: key,
+        sessionId: analyticsSessionId,
         eventType: analytics.eventType,
         pageUrl: pageUrl || "",
         location: analytics.location || "",
         userMessage: "",
         metadata: {
           ts: new Date().toISOString(),
+          fallbackFingerprint,
           ...analytics,
         },
       });
@@ -1069,13 +1087,14 @@ export default async function handler(req, res) {
 
     await sendAnalytics({
       kind: "event",
-      sessionId: key,
+      sessionId: analyticsSessionId,
       eventType: "user_message",
       pageUrl: pageUrl || "",
       location: "chat",
       userMessage: userMsg,
       metadata: {
         ts: new Date().toISOString(),
+        fallbackFingerprint,
       },
     });
 
