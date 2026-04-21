@@ -54,9 +54,7 @@ function getFallbackFingerprint(req) {
 function getSessionKey(req) {
   const bodySessionId = req.body?.sessionId;
   if (bodySessionId) return `session:${bodySessionId}`;
-
-  const fallback = getFallbackFingerprint(req);
-  return `fallback:${fallback}`;
+  return `fallback:${getFallbackFingerprint(req)}`;
 }
 
 function pushHistory(state, role, content) {
@@ -111,7 +109,7 @@ async function sendAnalytics(payload) {
   if (!url) return;
 
   try {
-    await fetch(https://script.google.com/macros/s/AKfycbx258pyGtPBSheEF2jZbcapVkgFCqQuqxpF76fXH1cURnuRk16BywKeP6VrsAFqO_e07A/exec
+    await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
